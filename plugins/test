@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+. "$(dirname "$0")"/.nnn-plugin-helper
+
+echo "Hello World"
+echo -e "\ue015"

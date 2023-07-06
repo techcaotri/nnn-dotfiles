@@ -1,0 +1,14 @@
+-maxdepth 1 -name pattern
+-maxdepth 1 -size +100M
+$fd -0 pattern
+$fd -0 -d 2 -S +100M
+$grep -rlZ pattern
+$rg -l0 pattern
+$fzf -m | tr '\n' '\0'
+$rg -l0 AppImage
+$rg -l0 CONFIG_ZMK_RGB_UNDERGLOW
+$rg -l0 "C-N"
+$rg "vim.lsp.buf.declaration"
+$rg -l0 "vim.lsp.buf.declaration"
+$rg -l0 "M.lspconfig"
+$rg -l0 "indent-blankline"

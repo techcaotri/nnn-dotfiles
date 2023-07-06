@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+
+# Description: Copy absolute path of highlight item to system clipboard. Only support linux for current version
+# Dependencies:
+# - tr
+# - xclip/xsel (Linux)
+#
+# Limitation: breaks if a filename has newline in it
+#
+# Note: For a space-separated list:
+#       xargs -0 < "$SELECTION"
+#
+# Shell: POSIX compliant
+# Author: Tri Pham
+
+IFS="$(printf '%b_' '\n')"; IFS="${IFS%_}" # protect trailing \n
+
+# selection=${NNN_SEL:-${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.selection}
+PWD=$PWD
+selection="$PWD/$1"
+echo $selection
+[ -f "$selection" ] || { echo "plugin my_copy_path error: empty selection" >&2 ; exit 1; }
+
+if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+    # Wayland
+    tr '\0' '\n' < "$selection" | wl-copy
+elif type xsel >/dev/null 2>&1; then
+    # Linux 
+    xsel -d && echo "$selection" | tr '\0' '\n' | xsel -bi
+elif type xclip >/dev/null 2>&1; then
+    # Linux
+    tr '\0' '\n' < "$selection" | xclip -sel clip
+fi
