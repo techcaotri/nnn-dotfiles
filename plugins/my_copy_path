@@ -19,7 +19,7 @@ IFS="$(printf '%b_' '\n')"; IFS="${IFS%_}" # protect trailing \n
 PWD=$PWD
 selection="$PWD/$1"
 echo $selection
-[ -f "$selection" ] || { echo "plugin my_copy_path error: empty selection" >&2 ; exit 1; }
+[ -e "$selection" ] || { echo "plugin my_copy_path error: empty selection" >&2 ; exit 1; }
 
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
     # Wayland
