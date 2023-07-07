@@ -19,7 +19,7 @@
 echo $1
 PWD=$PWD
 selection="$PWD/$1"
-[ -f "$selection" ] || { echo "plugin my_open_with error: empty selection" >&2 ; exit 1; }
+[ -e "$selection" ] || { echo "plugin my_open_with error: empty selection" >&2 ; exit 1; }
 
 # Open the file (works for a single file only)
 cmd_file=""
@@ -39,16 +39,22 @@ if [ -d "$entry" ]; then
     echo "**********************************************************"
     echo "> Selected folder: $entry\n"
     echo "Please choose the action to proceed:\n"
-    echo "  1. Open with Visual Studio Code - Insiders"
-    echo "  2. Open in new tmux window"
-    echo "  3. Follow folder link in nnn"
+    echo "  1. Open with NeoVim"
+    echo "  2. Open with Lazygit"
+    echo "  3. Open with Visual Studio Code - Insiders"
+    echo "  4. Open in new tmux window"
+    echo "  5. Follow folder link in nnn"
     read -r -p "Action: " ans
     case $ans in
         1)
-            ci "$entry";;
+            tmux new-window -c "$entry" "nvim";;
         2)
-            tmux new-window -c "$entry";;
+            tmux new-window -c "$entry" "lazygit";;
         3)
+            ci "$entry";;
+        4)
+            tmux new-window -c "$entry";;
+        5)
             if [ -n "$entry" ]; then
                 if [ "$entry" = "." ] || { ! [ -d "$entry" ] && ! [ -f "$entry" ]; }; then
                     exit 0
