@@ -44,7 +44,7 @@ if [ -d "$entry" ]; then
     echo "  3. Open with Visual Studio Code - Insiders"
     echo "  4. Open in new tmux window"
     echo "  5. Follow folder link in nnn"
-    echo "  6. rsync to my desktop" 
+    echo "  6. rsync to my Desktop machine" 
     read -r -p "Action: " ans
     case $ans in
         1)
