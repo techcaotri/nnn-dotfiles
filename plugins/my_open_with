@@ -39,23 +39,26 @@ if [ -d "$entry" ]; then
     echo "**********************************************************"
     echo "> Selected folder: $entry\n"
     echo "Please choose the action to proceed:\n"
-    echo "  1. Open with NeoVim"
-    echo "  2. Open with Lazygit"
-    echo "  3. Open with Visual Studio Code - Insiders"
-    echo "  4. Open in new tmux window"
-    echo "  5. Follow folder link in nnn"
-    echo "  6. rsync to my Desktop machine" 
+    echo "  1. Open with LunarVim"
+    echo "  2. Open with NeoVim"
+    echo "  3. Open with Lazygit"
+    echo "  4. Open with Visual Studio Code - Insiders"
+    echo "  5. Open in new tmux window"
+    echo "  6. Follow folder link in nnn"
+    echo "  7. rsync to my Desktop machine" 
     read -r -p "Action: " ans
     case $ans in
         1)
-            tmux new-window -c "$entry" "nvim";;
+            tmux new-window -c "$entry" "lvim";;
         2)
-            tmux new-window -c "$entry" "lazygit";;
+            tmux new-window -c "$entry" "nvim";;
         3)
-            ci "$entry";;
+            tmux new-window -c "$entry" "lazygit";;
         4)
-            tmux new-window -c "$entry";;
+            ci "$entry";;
         5)
+            tmux new-window -c "$entry";;
+        6)
             if [ -n "$entry" ]; then
                 if [ "$entry" = "." ] || { ! [ -d "$entry" ] && ! [ -f "$entry" ]; }; then
                     exit 0
@@ -78,7 +81,7 @@ if [ -d "$entry" ]; then
                 esac
             fi
             ;;
-        6)
+        7)
             myrsync_local.sh "$entry";;
         *)
             exit;;
