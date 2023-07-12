@@ -55,7 +55,7 @@ if [ -d "$entry" ]; then
         3)
             tmux new-window -c "$entry" "lazygit";;
         4)
-            ci "$entry";;
+            code-insiders "$entry";;
         5)
             tmux new-window -c "$entry";;
         6)
