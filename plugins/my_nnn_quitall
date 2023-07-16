@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+# Description: Quit all instances of nnn in tmux
+#
+# Dependencies:
+#   - 
+#
+# Shell: POSIX compliant
+# Authors: Tri Pham
+
+local list_ids=
+
+while read -r pane; do
+	pane=("$pane")
+	IFS=' ' read -r -a array <<<"$pane"
+	id=${array[0]}
+	cmd=${array[1]}
+	echo "pane_id: $id, cmd: $cmd" >>/tmp/my_nnn_quitall.log
+	if [[ $cmd != "nnn" ]]; then
+		continue
+	fi
+
+  IFS=$old_ifs
+  echo "id: $id" >>/tmp/my_nnn_quitall.log
+
+  list_ids="$list_ids $id"
+done < <(IFS=$'\n' tmux list-panes -aF '#{pane_id} #{pane_current_command}')
+
+
+printf "Found nnn instance(s). Do you want to quit all (y/n)? "
+IFS= read -r confirm
+if [[ $confirm == "y" ]]; then
+	# Set IFS to space explicitly
+	IFS=' '
+	# Check if the extracted PID is in the list of target PIDs
+	for id in $list_ids; do
+    echo "id: $id" >>/tmp/my_nnn_quitall.log
+    tmux send-keys -t "$id" "Q" "y" Enter
+	done
+fi
+
