@@ -8,7 +8,7 @@
 # Shell: POSIX compliant
 # Authors: Tri Pham
 
-local list_ids=
+list_ids=
 
 while read -r pane; do
 	pane=("$pane")

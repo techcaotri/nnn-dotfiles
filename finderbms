@@ -12,3 +12,6 @@ $rg "vim.lsp.buf.declaration"
 $rg -l0 "vim.lsp.buf.declaration"
 $rg -l0 "M.lspconfig"
 $rg -l0 "indent-blankline"
+$rg -l0 PWM_POLARITY_NORMAL
+$rg "&inc_dec_mwh"
+$rg lgcc_s
