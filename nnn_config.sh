@@ -6,4 +6,4 @@ alias nnn_left='/home/tripham/bin/nnn -e -a -o -r -R -i -d -H -P p -s left -S'
 alias nnn_right='/home/tripham/bin/nnn -e -a -o -r -R -i -d -H -P p -s right -S'
 export LC_COLLATE="C"
 export NNN_FIFO="/tmp/nnn.fifo"
-export SPLIT='v'
+export NNN_SPLIT='h'
