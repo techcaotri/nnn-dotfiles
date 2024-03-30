@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 
 # Description: Open highlight item.
 #               Opens in $VISUAL or $EDITOR if text.
@@ -19,7 +19,10 @@
 echo $1
 PWD=$PWD
 selection="$PWD/$1"
-[ -e "$selection" ] || { echo "plugin my_open_with error: empty selection" >&2 ; exit 1; }
+[ -e "$selection" ] || {
+	echo "plugin my_open_with error: empty selection" >&2
+	exit 1
+}
 
 # Open the file (works for a single file only)
 cmd_file=""
@@ -27,74 +30,84 @@ cmd_open=""
 entry=$selection
 echo $entry
 if uname | grep -q "Darwin"; then
-    cmd_file="file -bIL"
-    cmd_open="open"
+	cmd_file="file -bIL"
+	cmd_open="open"
 else
-    cmd_file="file -biL"
-    cmd_open="mimeopen_bg -D -a"
+	cmd_file="file -biL"
+	cmd_open="mimeopen_bg -D -a"
 fi
 
 CTX=+
 if [ -d "$entry" ]; then
-    echo "**********************************************************"
-    echo "> Selected folder: $entry\n"
-    echo "Please choose the action to proceed:\n"
-    echo "  1. Open with LunarVim"
-    echo "  2. Open with NeoVim"
-    echo "  3. Open with Lazygit"
-    echo "  4. Open with Visual Studio Code - Insiders"
-    echo "  5. Open in new tmux window"
-    echo "  6. Follow folder link in nnn"
-    echo "  7. rsync to my Desktop machine" 
-    read -r -p "Action: " ans
-    case $ans in
-        1)
-            tmux new-window -c "$entry" "lvim";;
-        2)
-            tmux new-window -c "$entry" "nvim";;
-        3)
-            tmux new-window -c "$entry" "lazygit";;
-        4)
-            code-insiders "$entry";;
-        5)
-            tmux new-window -c "$entry";;
-        6)
-            if [ -n "$entry" ]; then
-                if [ "$entry" = "." ] || { ! [ -d "$entry" ] && ! [ -f "$entry" ]; }; then
-                    exit 0
-                fi
+	echo "**********************************************************"
+	echo "> Selected folder: $entry\n"
+	echo "Please choose the action to proceed:\n"
+	echo "  1. Open with LunarVim"
+	echo "  2. Open with NeoVim"
+	echo "  3. Open with Lazygit"
+	echo "  4. Open with Visual Studio Code - Insiders"
+	echo "  5. Open in new tmux window"
+	echo "  6. Follow folder link in nnn"
+	echo "  7. rsync to my Desktop machine"
+	read -r -p "Action: " ans
+	case $ans in
+	1)
+		tmux new-window -c "$entry" "lvim"
+		;;
+	2)
+		tmux new-window -c "$entry" "nvim"
+		;;
+	3)
+		tmux new-window -c "$entry" "lazygit"
+		;;
+	4)
+		code-insiders "$entry"
+		;;
+	5)
+		tmux new-window -c "$entry"
+		;;
+	*)
+		# Fall-through
+		;&
+	6)
+		if [ -n "$entry" ]; then
+			if [ "$entry" = "." ] || { ! [ -d "$entry" ] && ! [ -f "$entry" ]; }; then
+				exit 0
+			fi
 
-                entry="$(readlink -f "$entry")"
+			entry="$(readlink -f "$entry")"
 
-                # Check if the selected path returned by fzf command is absolute
-                case $entry in
-                /*) nnn_cd "$entry" "$CTX" ;;
-                *)
-                    # Remove "./" prefix if it exists
-                    sel="${sel#./}"
+			# Check if the selected path returned by fzf command is absolute
+			case $entry in
+			/*) nnn_cd "$entry" "$CTX" ;;
+			*)
+				# Remove "./" prefix if it exists
+				sel="${sel#./}"
 
-                    if [ "$PWD" = "/" ]; then
-                        nnn_cd "/$entry" "$CTX"
-                    else
-                        nnn_cd "$PWD/$entry" "$CTX"
-                    fi;;
-                esac
-            fi
-            ;;
-        7)
-            myrsync_local.sh "$entry";;
-        *)
-            exit;;
-    esac
+				if [ "$PWD" = "/" ]; then
+					nnn_cd "/$entry" "$CTX"
+				else
+					nnn_cd "$PWD/$entry" "$CTX"
+				fi
+				;;
+			esac
+		fi
+		;;
+	7)
+		myrsync_local.sh "$entry"
+		;;
+	esac
 else
-    case "$($cmd_file "$entry")" in
-    *text*)
-        editor_cmd="${VISUAL:-$EDITOR}"
-        if [ -z "$editor_cmd" ]; then
-            editor_cmd=$cmd_open
-        fi
-        $editor_cmd "$entry" ;;
-    *)
-        $cmd_open "$entry" ;;
-    esac
+	case "$($cmd_file "$entry")" in
+	*text*)
+		editor_cmd="${VISUAL:-$EDITOR}"
+		if [ -z "$editor_cmd" ]; then
+			editor_cmd=$cmd_open
+		fi
+		$editor_cmd "$entry"
+		;;
+	*)
+		$cmd_open "$entry"
+		;;
+	esac
 fi

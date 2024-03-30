@@ -447,7 +447,8 @@ image_preview() {
         # Kitty terminal users can use the native image preview method
         kitty +kitten icat --silent --scale-up --place "$1"x"$2"@0x0 --transfer-mode=stream --stdin=no "$3" &
     elif [ "$NNN_TERMINAL" = "tmux" ]; then
-        kitty +kitten icat --silent --place "$1"x"$2"@0x0 --transfer-mode=stream --stdin=no "$3" &
+        # echo "image_preview - kitty: 1: $1, 2: $2, 3: $3" >> /tmp/nnn.log
+        kitty +kitten icat --silent --place "$1"x"$2"@0x0 --transfer-mode=memory --stdin=no "$3" &
         # chafa --fit-width "$3" &
 
         # Kitty terminal users can use the native image preview method
