@@ -54,6 +54,7 @@ if [ -n "$entry" ]; then
     echo "  1. Change to selected folder"
     echo "  2. Open in new tmux window"
     echo "  3. Open with LunarVim"
+    echo "  4. Open with Lazygit"
     read -r -p "Action: " ans
     case $ans in
         1)
@@ -81,6 +82,8 @@ if [ -n "$entry" ]; then
             tmux new-window -c "$entry";;
         3)
             tmux new-window -c "$entry" "lvim";;
+        4)
+            tmux new-window -c "$entry" "lazygit";;
         *)
             exit;;
     esac
