@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+# Description: Navigate to directory using the z command from zoxide
+#
+# Dependencies:
+#   - zoxide - https://github.com/ajeetdsouza/zoxide
+# Note: The dependencies STORE NAVIGATION PATTERNS
+#
+#
+# to make z.lua work, you need to set $NNN_ZLUA to the path of script z.lua
+#
+# Shell: POSIX compliant
+# Authors: Marty Buchaus, Dave Snider, Tim Adler, Nick Waywood
+
+if [ ! -p "$NNN_PIPE" ]; then
+	printf 'ERROR: NNN_PIPE is not set!'
+	read -r _
+	exit 2
+fi
+
+if type zoxide >/dev/null 2>&1; then
+  eval "$(zoxide init bash)"
+  printf 'jump(z) to : '
+	read -e -r dir
+	odir="$(jump cd "$dir")"
+  zoxide add $odir
+  >&2 echo "$odir"
+	printf "%s" "0c$odir" >"$NNN_PIPE"
+fi
