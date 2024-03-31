@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-# Description: Open new tmux window and preview all the image files in it.
+# Description: Open new tmux window and run lfrun (lf with image preview support).
 #
-# Dependencies: kitty, fzf, bat
+# Dependencies: kitty, lf (with image preview support), tmux
 #
 # Limitation: breaks if a filename has newline in it
 #
@@ -17,7 +17,7 @@ echo $1
 PWD=$PWD
 selection="$PWD/$1"
 [ -e "$selection" ] || {
-	echo "plugin my_fzf_image_preview error: empty selection" >&2
+	echo "plugin my_lfrun error: empty selection" >&2
 	exit 1
 }
 
@@ -26,8 +26,7 @@ entry="$(dirname "$selection")"
 echo $entry
 
 if [ -d "$entry" ]; then
-	tmux set -g default-shell "/bin/bash" ;\
-    tmux new-window -c "$entry" "find . -maxdepth 1 | sed 's/^..//' | fzf --ansi --preview='fzf-preview.sh {}' --bind ctrl-k:preview-page-up,ctrl-j:preview-page-down"
+  tmux new-window -c "$entry" "lfrun"
 else
-	echo >&2 "plugin my_fzf_image_preview error: not a directory"
+	echo >&2 "plugin my_lfrun error: not a directory"
 fi
