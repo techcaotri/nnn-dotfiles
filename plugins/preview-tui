@@ -394,7 +394,7 @@ generate_preview() {
         mkdir -p "$NNN_PREVIEWDIR/${3%/*}"
         case $4 in
             audio) ffmpeg -i "$3" -filter_complex "scale=iw*min(1\,min($NNN_PREVIEWWIDTH/iw\,ih)):-1" "$NNN_PREVIEWDIR/$3.jpg" -y ;;
-            epub) gnome-epub-thumbnailer "$3" "$NNN_PREVIEWDIR/$3.jpg" ;;
+            epub) epub-thumbnailer "$3" "$NNN_PREVIEWDIR/$3.jpg" 1024 ;;
             font) fontpreview -i "$3" -o "$NNN_PREVIEWDIR/$3.jpg" ;;
             gif) if [ -p "$FIFO_UEBERZUG" ] && exists convert; then
                     frameprefix="$NNN_PREVIEWDIR/$3/${3##*/}"
@@ -424,12 +424,17 @@ generate_preview() {
                    else
                        image_preview "$1" "$2" "$3" && return
                    fi ;;
-            office) libreoffice --convert-to jpg "$3" --outdir "$NNN_PREVIEWDIR/${3%/*}"
-                    filename="$(printf "%s" "${3##*/}" | cut $NNN_PREVIEWDIR/-d. -f1)"
-                    mv "$NNN_PREVIEWDIR/${3%/*}/$filename.jpg" "$NNN_PREVIEWDIR/$3.jpg" ;;
+            office)
+              echo "libreoffice --convert-to jpg "$3" --outdir "$NNN_PREVIEWDIR/${3%/*}"" >> /tmp/nnn.log
+              libreoffice --convert-to jpg "$3" --outdir "$NNN_PREVIEWDIR/${3%/*}"
+              # filename="$(printf "%s" "${3##*/}" | cut $NNN_PREVIEWDIR/-d. -f1)"
+              filename=$(basename "${3%.*}")
+              echo "filename: $filename" >> /tmp/nnn.log
+              echo "mv "$NNN_PREVIEWDIR/${3%/*}/$filename.jpg" "$NNN_PREVIEWDIR/$3.jpg"" >> /tmp/nnn.log
+              mv "$NNN_PREVIEWDIR/${3%/*}/$filename.jpg" "$NNN_PREVIEWDIR/$3.jpg" ;;
             pdf) pdftoppm -jpeg -f 1 -singlefile "$3" "$NNN_PREVIEWDIR/$3" ;;
             djvu) ddjvu -format=ppm -page=1 "$3" "$NNN_PREVIEWDIR/$3.jpg" ;;
-            video) ffmpegthumbnailer -m -s0 -i "$3" -o "$NNN_PREVIEWDIR/$3.jpg" || rm "$NNN_PREVIEWDIR/$3.jpg" ;;
+            video) ffmpegthumbnailer -i "$3" -o "$NNN_PREVIEWDIR/$3.jpg" -s 0 -q 5 || rm "$NNN_PREVIEWDIR/$3.jpg" ;;
         esac
     fi
     if [ -f "$NNN_PREVIEWDIR/$3.jpg" ]; then
@@ -447,8 +452,10 @@ image_preview() {
         # Kitty terminal users can use the native image preview method
         kitty +kitten icat --silent --scale-up --place "$1"x"$2"@0x0 --transfer-mode=stream --stdin=no "$3" &
     elif [ "$NNN_TERMINAL" = "tmux" ]; then
+        echo "image_preview - tmux: 1: $1, 2: $2, 3: $3" >> /tmp/nnn.log
+        ueberzug_layer "$1" "$2" "$3" && return
         # echo "image_preview - kitty: 1: $1, 2: $2, 3: $3" >> /tmp/nnn.log
-        kitty +kitten icat --silent --place "$1"x"$2"@0x0 --transfer-mode=memory --stdin=no "$3" &
+        # kitty +kitten icat --silent --place "$1"x"$2"@0x0 --transfer-mode=memory --stdin=no "$3" &
         # chafa --fit-width "$3" &
 
         # Kitty terminal users can use the native image preview method
