@@ -86,10 +86,10 @@ if [ -n "$entry" ]; then
 		tmux new-window -c "$entry"
 		;;
 	3)
-		tmux new-window -c "$entry" "lvim"
+		tmux new-window -n "lvim" -c "$entry" "lvim"
 		;;
 	4)
-		tmux new-window -c "$entry" "lazygit"
+		tmux new-window -n "lazygit" -c "$entry" "lazygit"
 		;;
 	esac
 fi

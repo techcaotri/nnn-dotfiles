@@ -49,11 +49,11 @@ if [ -d "$entry" ]; then
     read -r -p "Action: " ans
     case $ans in
         1)
-            tmux new-window -c "$entry" "lvim";;
+            tmux new-window -n "lvim" -c "$entry" "lvim";;
         2)
-            tmux new-window -c "$entry" "nvim";;
+            tmux new-window -n "nvim" -c "$entry" "nvim";;
         3)
-            tmux new-window -c "$entry" "lazygit";;
+            tmux new-window -n "lazygit" -c "$entry" "lazygit";;
         4)
             code-insiders "$entry";;
         5)
