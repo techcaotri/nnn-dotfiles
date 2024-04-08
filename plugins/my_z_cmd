@@ -22,8 +22,8 @@ if type zoxide >/dev/null 2>&1; then
   eval "$(zoxide init bash)"
   printf 'jump(z) to : '
 	read -e -r dir
-	odir="$(jump cd "$dir")"
-  zoxide add $odir
+  odir=$(eval echo "$dir")
+  zoxide add "$odir"
   >&2 echo "$odir"
 	printf "%s" "0c$odir" >"$NNN_PIPE"
 fi
