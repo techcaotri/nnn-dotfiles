@@ -66,6 +66,10 @@ if [ -d "$entry" ]; then
 	5)
 		tmux new-window -c "$entry"
 		;;
+	7)
+    echo myrsync_local.sh "$entry" >&2
+		myrsync_local.sh "$entry"
+		;;
 	*)
 		# Fall-through
 		;&
@@ -92,9 +96,6 @@ if [ -d "$entry" ]; then
 				;;
 			esac
 		fi
-		;;
-	7)
-		myrsync_local.sh "$entry"
 		;;
 	esac
 else

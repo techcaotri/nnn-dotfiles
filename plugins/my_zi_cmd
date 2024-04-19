@@ -57,10 +57,16 @@ if [ -n "$entry" ]; then
 	echo "  4. Open with Lazygit"
 	read -r -p "Action: " ans
 	case $ans in
-	*)
-    # Fall-through
-		;&
-	1)
+	2)
+		tmux new-window -c "$entry"
+		;;
+	3)
+		tmux new-window -n "lvim" -c "$entry" "lvim"
+		;;
+	4)
+		tmux new-window -n "lazygit" -c "$entry" "lazygit"
+		;;
+	1|*)
 		if [ -n "$entry" ]; then
 			if [ "$entry" = "." ] || { ! [ -d "$entry" ] && ! [ -f "$entry" ]; }; then
 				exit 0
@@ -81,15 +87,6 @@ if [ -n "$entry" ]; then
 				;;
 			esac
 		fi
-		;;
-	2)
-		tmux new-window -c "$entry"
-		;;
-	3)
-		tmux new-window -n "lvim" -c "$entry" "lvim"
-		;;
-	4)
-		tmux new-window -n "lazygit" -c "$entry" "lazygit"
 		;;
 	esac
 fi
