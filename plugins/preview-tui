@@ -172,6 +172,7 @@ start_preview() {
             >&2 echo "start_preview - NNN_SPLIT: $NNN_SPLIT"
             if [ "$NNN_SPLIT" = "v" ]; then split="h"; else split="v"; fi
             # eval tmux split-window "$ENVSTRING" -d"$split" -p"$NNN_SPLITSIZE" "$0" "$1" 1 ;;
+            # echo eval tmux split-window "$ENVSTRING" -d"$split" "$0" "$1" 1  >> /tmp/nnn_tripham.log
             eval tmux split-window "$ENVSTRING" -d"$split" "$0" "$1" 1 ;;
         kitty) # Setting the layout for the new window. It will be restored after the script ends.
 
@@ -242,8 +243,10 @@ fifo_pager() {
     shift
 
     # We use a FIFO to access $NNN_PAGER PID in jobs control
+    # echo "fifo_pager 2: $FIFOPATH" >> /tmp/nnn.log
     mkfifo "$FIFOPATH" || return
 
+    # echo "fifo_pager 3: $PREVIEWPID" >> /tmp/nnn.log
     $NNN_PAGER < "$FIFOPATH" &
     printf "%s" "$!" > "$PREVIEWPID"
 
@@ -337,18 +340,21 @@ preview_file() {
     # Trying to use pistol if it's available.
     if [ "$NNN_PISTOL" -ne 0 ] && exists pistol; then
         fifo_pager pistol "$1"
+        # echo "TriPham: pistol $1" >> /tmp/nnn.log
         return
     fi
 
     # Trying to use scope.sh if it's available.
     if [ "$NNN_SCOPE" -ne 0 ] && exists scope.sh; then
         fifo_pager scope.sh "$1" "$cols" "$lines" "$(mktemp -d)" "True"
+        # echo "TriPham: scope.sh $1" >> /tmp/nnn.log
         return
     fi
 
     # Use QuickLook if it's available.
     if [ -n "$QUICKLOOK" ]; then
         stat "$1" && f="$(wslpath -w "$1")" && "$QLPATH" "$f" &
+        # echo "TriPham: QuickLook $1" >> /tmp/nnn.log
         return
     fi
 
@@ -361,9 +367,12 @@ preview_file() {
     lines=$(tput lines)
     cols=$(tput cols)
 
+    # echo "TriPham: preview_file check directory exist" >> /tmp/nnn.log
     # Otherwise, falling back to the defaults.
     if [ -d "$1" ]; then
+        # echo "TriPham: $1 before cd" >> /tmp/nnn.log
         cd "$1" || return
+        # echo "TriPham: $1 after cd" >> /tmp/nnn.log
         if [ "$NNN_ICONLOOKUP" -ne 0 ] && [ -f "$(dirname "$0")"/.iconlookup ]; then
             [ "$NNN_SPLIT" = v ] && BSTR="\n"
             # shellcheck disable=SC2012
@@ -500,10 +509,16 @@ winch_handler() {
 
 preview_fifo() {
     while read -r selection; do
+        echo "preview_fifo - selection: $selection" >> /tmp/nnn.log
         if [ -n "$selection" ]; then
+            echo "preview_fifo - process preview" >> /tmp/nnn.log
             pidkill "$PREVIEWPID"
-            [ -p "$FIFO_UEBERZUG" ] && ueberzug_remove
+            echo "preview_fifo - process preview 1" >> /tmp/nnn.log
+            # If the below line is crashed, the preview will be stopped -> comment out for WSL Wezterm
+            # [ -p "$FIFO_UEBERZUG" ] && ueberzug_remove
+            echo "preview_fifo - process preview 2" >> /tmp/nnn.log
             [ "$selection" = "close" ] && break
+            echo "preview_fifo - calling preview_file" >> /tmp/nnn.log
             preview_file "$selection"
             printf "%s" "$selection" > "$CURSEL"
         fi
@@ -515,7 +530,6 @@ preview_fifo() {
 # echo "main KITTY_LISTEN_ON: $KITTY_LISTEN_ON" >> /tmp/nnn.log
 
 # echo "main, PREVIEW_MODE: $PREVIEW_MODE" >> /tmp/nnn.log
-
 if [ "$PREVIEW_MODE" -eq 1 ] 2>/dev/null; then
 
     if [ "$NNN_TERMINAL" != "kitty" ] && exists ueberzug; then
@@ -523,6 +537,7 @@ if [ "$PREVIEW_MODE" -eq 1 ] 2>/dev/null; then
         tail --follow "$FIFO_UEBERZUG" | ueberzug layer --silent --parser json &
     fi
 
+    # echo preview_file "$PWD/$1" >> /tmp/nnn.log
     preview_file "$PWD/$1"
     preview_fifo &
     printf "%s" "$!" > "$FIFOPID"
