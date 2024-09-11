@@ -100,13 +100,6 @@ if [ -d "$entry" ]; then
 	esac
 else
 	case "$($cmd_file "$entry")" in
-	*text*)
-		editor_cmd="${VISUAL:-$EDITOR}"
-		if [ -z "$editor_cmd" ]; then
-			editor_cmd=$cmd_open
-		fi
-		$editor_cmd "$entry"
-		;;
 	*)
 		$cmd_open "$entry"
 		;;
