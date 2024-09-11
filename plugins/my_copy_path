@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 
 # Description: Copy absolute path of highlight item to system clipboard. Only support linux for current version
 # Dependencies:
@@ -13,21 +13,40 @@
 # Shell: POSIX compliant
 # Author: Tri Pham
 
-IFS="$(printf '%b_' '\n')"; IFS="${IFS%_}" # protect trailing \n
+# If you want a system notification when a file path is copied to clipboard,
+# put this variable  to 1.
+notify=1
+
+send_notification() {
+  if [ "$notify" -eq 1 ]; then
+    notify-send "my_copy_path" "Path '$selection' copied to clipboard"
+  fi
+}
+
+IFS="$(printf '%b_' '\n')"
+IFS="${IFS%_}" # protect trailing \n
 
 # selection=${NNN_SEL:-${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.selection}
 PWD=$PWD
 selection="$PWD/$1"
-echo $selection
-[ -e "$selection" ] || { echo "plugin my_copy_path error: empty selection" >&2 ; exit 1; }
+echo $selection >>/tmp/nnn.log
+[ -e "$selection" ] || {
+  echo "plugin my_copy_path error: empty selection" >&2
+  exit 1
+}
 
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
-    # Wayland
-    tr '\0' '\n' < "$selection" | wl-copy
+  echo "Wayland session" >>/tmp/nnn.log
+  # Wayland
+  printf "%s" "$selection" | wl-copy
+  printf "%s" "$selection" | wl-copy --primary
+  send_notification
 elif type xsel >/dev/null 2>&1; then
-    # Linux 
-    xsel -d && echo "$selection" | tr '\0' '\n' | sed -z 's/[ \t]*\n$//' | xsel -bi
+  # Linux
+  xsel -d && echo "$selection" | tr '\0' '\n' | sed -z 's/[ \t]*\n$//' | xsel -bi
+  send_notification
 elif type xclip >/dev/null 2>&1; then
-    # Linux
-    tr '\0' '\n' < "$selection" | xclip -sel clip
+  # Linux
+  tr '\0' '\n' <"$selection" | xclip -sel clip
+  send_notification
 fi
