@@ -23,7 +23,7 @@ echo $selection
 
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
     # Wayland
-    tr '\0' '\n' < "$selection" | wl-copy
+    echo "$selection" | tr '\0' '\n' | sed -z 's/[ \t]*\n$//' | wl-copy
 elif type xsel >/dev/null 2>&1; then
     # Linux 
     xsel -d && echo "$selection" | tr '\0' '\n' | sed -z 's/[ \t]*\n$//' | xsel -bi
