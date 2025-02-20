@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+# echo "$NNN_FIFO" > /tmp/my_nnn.log
+eval "$(zoxide init bash)"
+
+zoxide_fifo() {
+	while read -r selection; do
+		if [ -n "$selection" ]; then
+			[ "$selection" = "close" ] && break
+      BASEDIR=$(dirname "$selection")
+      # echo "$BASEDIR" >> /tmp/my_nnn.log
+      zoxide add "$BASEDIR"
+		fi
+	done <"$NNN_FIFO"
+	sleep 0.1 # make sure potential preview by winch_handler is killed
+	pkill -P "$$"
+}
+
+zoxide_fifo &
