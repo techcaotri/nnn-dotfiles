@@ -9,7 +9,7 @@ zoxide_fifo() {
 			[ "$selection" = "close" ] && break
       BASEDIR=$(dirname "$selection")
       # echo "$BASEDIR" >> /tmp/my_nnn.log
-      zoxide add "$BASEDIR"
+      zoxide add "$BASEDIR" > /dev/null 2>&1
 		fi
 	done <"$NNN_FIFO"
 	sleep 0.1 # make sure potential preview by winch_handler is killed
