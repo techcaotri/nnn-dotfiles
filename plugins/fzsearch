@@ -121,15 +121,17 @@ elif [[ "$select" == "Search name of file" ]]; then
 				--ansi --layout=reverse -xC -w '80%' -h '80%' --header "$select" --prompt "Find and Select file> " |
 				cut -d':' -f1
 		)"
+    full_path="$(pwd)/$res"
+    notify-send "$full_path"
 		if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
 			# Wayland
-      tr '\0' '\n' <"$(pwd)/$res" | wl-copy
+      tr '\0' '\n' <"$full_path" | wl-copy
 		elif type xsel >/dev/null 2>&1; then
 			# Linux
-			xsel -d && echo "$(pwd)/$res" | tr '\0' '\n' | sed -z 's/[ \t]*\n$//' | xsel -bi
+			xsel -d && echo "$full_path" | tr '\0' '\n' | sed -z 's/[ \t]*\n$//' | xsel -bi
 		elif type xclip >/dev/null 2>&1; then
 			# Linux
-			tr '\0' '\n' <"$(pwd)/$res" | xclip -sel clip
+			tr '\0' '\n' <"$full_path" | xclip -sel clip
 		fi
 	fi
 fi
