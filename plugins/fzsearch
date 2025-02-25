@@ -79,7 +79,7 @@ if [[ "$select" == "Grep string in file" ]]; then
 				cut -d':' -f1
 		)"
 
-		notify-send "$res"
+    notify-send "$(pwd)/$res"
 		tol "$res"
 	fi
 
