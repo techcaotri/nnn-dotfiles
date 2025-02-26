@@ -54,8 +54,8 @@ extract_contexts() {
 	local session_file="$1"
 	local pane_name="$2"
 
-	echo "session_file: $session_file" >>/tmp/nnn_ctx_switcher.log
-	echo "pane_name: $pane_name" >>/tmp/nnn_ctx_switcher.log
+	# echo "session_file: $session_file" >>/tmp/nnn_ctx_switcher.log
+	# echo "pane_name: $pane_name" >>/tmp/nnn_ctx_switcher.log
 
 	# Check if session file exists
 	if [ ! -f "$session_file" ]; then
@@ -64,7 +64,7 @@ extract_contexts() {
 
 	# Extract session version (first 8 bytes)
 	local SESSION_VERSION=$(/usr/bin/xxd -p -l 8 "$session_file" | /usr/bin/xxd -r -p | /usr/bin/hexdump -n 8 -e '1/8 "%d\n"')
-	echo "SESSION_VERSION: $SESSION_VERSION" >>/tmp/nnn_ctx_switcher.log
+	# echo "SESSION_VERSION: $SESSION_VERSION" >>/tmp/nnn_ctx_switcher.log
 
 	# Ensure version matches expected version
 	if [ "$SESSION_VERSION" -ne 1 ]; then
@@ -130,10 +130,10 @@ extract_contexts() {
 		# Extract c_path
 		if [ "${PATH_LEN[$ctx]}" -gt 0 ]; then
 			local PATH=$(/usr/bin/xxd -p -s $CONTEXT_OFFSET -l ${PATH_LEN[$ctx]} "$session_file" | /usr/bin/xxd -r -p | /usr/bin/tr -d '\000' | /usr/bin/sed 's/[[:space:]]*$//')
-			echo "PATH: $PATH" >>/tmp/nnn_ctx_switcher.log
+			# echo "PATH: $PATH" >>/tmp/nnn_ctx_switcher.log
 
 			if [ -n "$PATH" ]; then
-				echo "$pane_name:$((ctx + 1)):$PATH" >>/tmp/nnn_ctx_switcher.log
+				# echo "$pane_name:$((ctx + 1)):$PATH" >>/tmp/nnn_ctx_switcher.log
 				echo "$pane_name:$((ctx + 1)):$PATH"
 			fi
 		fi
