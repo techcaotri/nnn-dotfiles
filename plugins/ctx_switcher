@@ -2,80 +2,200 @@
 
 . "$(dirname "$0")"/.nnn-plugin-helper
 
-# Plugin for nnn to list and switch between contexts
-# Shows context number and path for selection
+# Plugin for nnn to list and switch between contexts across tmux panes
+# Shows tmux pane, context number and path for selection
+# Allows switching to any context in any tmux pane
+
+# Session files path
+SESSIONS_DIR="/home/tripham/.config/nnn/sessions"
+LEFT_SESSION="$SESSIONS_DIR/left"
+RIGHT_SESSION="$SESSIONS_DIR/right"
+
+# Constants for session file parsing
+CTX_MAX=8       # Maximum contexts defined
+SIZE_T=8        # size_t is 8 bytes
+SETTINGS_SIZE=4 # settings struct is 4 bytes
+UINT_SIZE=4     # uint_t is 4 bytes
 
 # Exit if NNN_PIPE is not set
 if [ -z "$NNN_PIPE" ]; then
-    echo "Error: NNN_PIPE is not set. This plugin must be run from within nnn."
-    exit 1
+	echo "Error: NNN_PIPE is not set. This plugin must be run from within nnn."
+	exit 1
 fi
 
-# Check if we have all 8 context paths
+# Check if we have context paths
 if [ -z "$d1" ] && [ -z "$d2" ] && [ -z "$d3" ] && [ -z "$d4" ] && [ -z "$d5" ] && [ -z "$d6" ] && [ -z "$d7" ] && [ -z "$d8" ]; then
-    echo "No contexts available."
-    read -r _
-    exit 1
+	echo "No contexts available."
+	read -r _
+	exit 1
 fi
 
 # Temporary file for selection
 TMPFILE="$(mktemp)"
 trap 'rm -f "$TMPFILE"' EXIT
 
-# Current context (the one we are in)
-# CURCTX="$((NNN_LEVEL + 1))"
+# Get current tmux pane position (0 = left, 1 = right)
+CURRENT_PANE=$(tmux display-message -p '#{pane_index}')
+CURRENT_PATH="$PWD"
+
+# Determine which session file to read for the other pane
+if [ "$CURRENT_PANE" -eq 1 ]; then
+	# Current is left pane, read right session
+	OTHER_SESSION="$RIGHT_SESSION"
+	OTHER_PANE_NAME="Right"
+else
+	# Current is right pane, read left session
+	OTHER_SESSION="$LEFT_SESSION"
+	OTHER_PANE_NAME="Left"
+fi
+
+# Function to properly extract contexts from session file
+extract_contexts() {
+	local session_file="$1"
+	local pane_name="$2"
+
+	echo "session_file: $session_file" >>/tmp/nnn_ctx_switcher.log
+	echo "pane_name: $pane_name" >>/tmp/nnn_ctx_switcher.log
+
+	# Check if session file exists
+	if [ ! -f "$session_file" ]; then
+		return
+	fi
+
+	# Extract session version (first 8 bytes)
+	local SESSION_VERSION=$(/usr/bin/xxd -p -l 8 "$session_file" | /usr/bin/xxd -r -p | /usr/bin/hexdump -n 8 -e '1/8 "%d\n"')
+	echo "SESSION_VERSION: $SESSION_VERSION" >>/tmp/nnn_ctx_switcher.log
+
+	# Ensure version matches expected version
+	if [ "$SESSION_VERSION" -ne 1 ]; then
+		echo "Session version mismatch in $session_file" >&2
+		return
+	fi
+
+	# Read session header (starting at offset 8)
+	local HEADER_OFFSET=8
+
+	# Arrays to store lengths
+	declare -a PATH_LEN LAST_LEN NAME_LEN FLTR_LEN
+
+	# Read path lengths
+	for ctx in $(seq 0 $((CTX_MAX - 1))); do
+		local OFFSET=$((HEADER_OFFSET + (ctx * SIZE_T)))
+		PATH_LEN[$ctx]=$(/usr/bin/xxd -p -s $OFFSET -l $SIZE_T "$session_file" | /usr/bin/xxd -r -p | /usr/bin/hexdump -n 8 -e '1/8 "%d\n"')
+	done
+	HEADER_OFFSET=$((HEADER_OFFSET + (CTX_MAX * SIZE_T)))
+
+	# Read last dir lengths
+	for ctx in $(seq 0 $((CTX_MAX - 1))); do
+		local OFFSET=$((HEADER_OFFSET + (ctx * SIZE_T)))
+		LAST_LEN[$ctx]=$(/usr/bin/xxd -p -s $OFFSET -l $SIZE_T "$session_file" | /usr/bin/xxd -r -p | /usr/bin/hexdump -n 8 -e '1/8 "%d\n"')
+	done
+	HEADER_OFFSET=$((HEADER_OFFSET + (CTX_MAX * SIZE_T)))
+
+	# Read name lengths
+	for ctx in $(seq 0 $((CTX_MAX - 1))); do
+		local OFFSET=$((HEADER_OFFSET + (ctx * SIZE_T)))
+		NAME_LEN[$ctx]=$(/usr/bin/xxd -p -s $OFFSET -l $SIZE_T "$session_file" | /usr/bin/xxd -r -p | /usr/bin/hexdump -n 8 -e '1/8 "%d\n"')
+	done
+	HEADER_OFFSET=$((HEADER_OFFSET + (CTX_MAX * SIZE_T)))
+
+	# Read filter lengths
+	for ctx in $(seq 0 $((CTX_MAX - 1))); do
+		local OFFSET=$((HEADER_OFFSET + (ctx * SIZE_T)))
+		FLTR_LEN[$ctx]=$(/usr/bin/xxd -p -s $OFFSET -l $SIZE_T "$session_file" | /usr/bin/xxd -r -p | /usr/bin/hexdump -n 8 -e '1/8 "%d\n"')
+	done
+	HEADER_OFFSET=$((HEADER_OFFSET + (CTX_MAX * SIZE_T)))
+
+	# Skip global settings
+	local SETTINGS_OFFSET=$HEADER_OFFSET
+	local CONTEXT_OFFSET=$((SETTINGS_OFFSET + SETTINGS_SIZE))
+
+	# Process each context
+	for ctx in $(seq 0 $((CTX_MAX - 1))); do
+		# Skip context settings
+		CONTEXT_OFFSET=$((CONTEXT_OFFSET + SETTINGS_SIZE))
+
+		# Skip color
+		CONTEXT_OFFSET=$((CONTEXT_OFFSET + UINT_SIZE))
+
+		# Skip c_name
+		CONTEXT_OFFSET=$((CONTEXT_OFFSET + NAME_LEN[$ctx]))
+
+		# Skip c_last
+		CONTEXT_OFFSET=$((CONTEXT_OFFSET + LAST_LEN[$ctx]))
+
+		# Skip c_fltr
+		CONTEXT_OFFSET=$((CONTEXT_OFFSET + FLTR_LEN[$ctx]))
+
+		# Extract c_path
+		if [ "${PATH_LEN[$ctx]}" -gt 0 ]; then
+			local PATH=$(/usr/bin/xxd -p -s $CONTEXT_OFFSET -l ${PATH_LEN[$ctx]} "$session_file" | /usr/bin/xxd -r -p | /usr/bin/tr -d '\000' | /usr/bin/sed 's/[[:space:]]*$//')
+			echo "PATH: $PATH" >>/tmp/nnn_ctx_switcher.log
+
+			if [ -n "$PATH" ]; then
+				echo "$pane_name:$((ctx + 1)):$PATH" >>/tmp/nnn_ctx_switcher.log
+				echo "$pane_name:$((ctx + 1)):$PATH"
+			fi
+		fi
+
+		CONTEXT_OFFSET=$((CONTEXT_OFFSET + PATH_LEN[$ctx]))
+	done
+}
 
 # Build the selection menu
 {
-    for i in {1..8}; do
-        eval path="\$d$i"
-        if [ -n "$path" ]; then
-            # Add a marker for current context
-            if [ "$path" == "$2" ]; then
-                echo "$i: $path [current]"
-            else
-                echo "$i: $path"
-            fi
-        fi
-    done
-} > "$TMPFILE"
+	# First add the current pane contexts with accurate context numbers
+	for i in {1..8}; do
+		eval path="\$d$i"
+		if [ -n "$path" ]; then
+			# Add a marker for current context
+			if [ "$path" == "$CURRENT_PATH" ]; then
+				echo "Current:$i:$path [ACTIVE]"
+			else
+				echo "Current:$i:$path"
+			fi
+		fi
+	done
+
+	# Try to add contexts from other pane (if session file exists)
+	extract_contexts "$OTHER_SESSION" "$OTHER_PANE_NAME"
+
+} >"$TMPFILE"
 
 # Count number of lines in the file
-LINES=$(wc -l < "$TMPFILE")
+LINES=$(wc -l <"$TMPFILE")
 
 if [ "$LINES" -eq 0 ]; then
-    echo "No contexts available."
-    read -r _
-    exit 1
+	echo "No contexts available."
+	read -r _
+	exit 1
 fi
 
-# Use fzf to select a context if available, otherwise use a simpler approach
-if command -v fzf >/dev/null 2>&1; then
-    # Use fzf for selection with nice formatting
-    SELECTED=$(fzf --height=50% --layout=reverse --border \
-               --prompt="Select a context to switch to: " \
-               --header="Available contexts (total: $LINES)" < "$TMPFILE")
-else
-    # Simple selection without fzf
-    echo "Available contexts (total: $LINES):"
-    cat "$TMPFILE"
-    echo ""
-    echo -n "Select a context to switch to [1-8]: "
-    read -r input
-    
-    # Find the corresponding line
-    SELECTED=$(grep "^$input: " "$TMPFILE")
-fi
+# Use fzf for selection
+SELECTED=$(fzf --height=50% --layout=reverse --border \
+	--prompt="Select a pane and context to switch to: " \
+	--header="Available contexts (total: $LINES)" <"$TMPFILE")
 
 # Exit if nothing was selected
 if [ -z "$SELECTED" ]; then
-    exit 0
+	exit 0
 fi
 
-# Extract the context number
-CTX_NUM=$(echo "$SELECTED" | cut -d':' -f1)
-CTX_DIR=$(echo "$SELECTED" | cut -d':' -f2)
+# Extract pane, context number and path
+PANE_NAME=$(echo "$SELECTED" | cut -d':' -f1)
+CTX_NUM=$(echo "$SELECTED" | cut -d':' -f2)
+CTX_PATH=$(echo "$SELECTED" | cut -d':' -f3 | /usr/bin/sed 's/ \[ACTIVE\]$//')
 
-tmux send-keys -t : . "$CTX_NUM"
+# Switch panes if needed
+if [ "$PANE_NAME" != "Current" ]; then
+	# Switch to the other pane
+	tmux select-pane -t :.+
+
+	# Send the context number to the other pane's nnn
+  tmux send-keys -t : . $CTX_NUM 
+else
+	# Switch to the selected context in current pane
+  tmux send-keys -t : . $CTX_NUM 
+fi
 
 exit 0
