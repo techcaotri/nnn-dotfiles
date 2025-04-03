@@ -46,6 +46,7 @@ if [ -d "$entry" ]; then
     echo "  5. Open in new tmux window"
     echo "  6. Follow folder link in nnn"
     echo "  7. rsync to my Desktop machine" 
+    echo "  8. Open with Cursor AI IDE"
     read -r -p "Action: " ans
     case $ans in
         1)
@@ -83,6 +84,9 @@ if [ -d "$entry" ]; then
             ;;
         7)
             myrsync_local.sh "$entry";;
+        8)
+            cursor "$entry" >/dev/null 2>&1 &
+            ;;
         *)
             exit;;
     esac
@@ -95,6 +99,7 @@ else
     echo "  3. Open with Visual Studio Code - Insiders"
     echo "  4. Open with mimeopen_bg" 
     echo "  5. Open with mimeopen_bg (magic only)" 
+    echo "  6. Open with Cursor AI IDE"
     read -r -p "Action: " ans
     case $ans in
         1)
@@ -107,6 +112,9 @@ else
             mimeopen_bg "$entry";;
         5)
             mimeopen_bg -M "$entry";;
+        6)
+            cursor "$entry"  >/dev/null 2>&1 &
+            ;;
         *)
             exit;;
     esac
