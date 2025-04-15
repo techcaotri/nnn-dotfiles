@@ -526,6 +526,7 @@ winch_handler() {
 }
 
 preview_fifo() {
+    PREV_BASEDIR=""
     while read -r selection; do
         if [ -n "$selection" ]; then
             # echo "preview_fifo: $selection" >> /tmp/nnn.log
@@ -534,6 +535,16 @@ preview_fifo() {
             [ "$selection" = "close" ] && break
             preview_file "$selection"
             printf "%s" "$selection" > "$CURSEL"
+
+            # Update zoxide database
+            BASEDIR=$(dirname "$selection")
+            # echo "BASEDIR: $BASEDIR" >> /tmp/nnn.log
+            # echo "PREV_BASEDIR: $PREV_BASEDIR" >> /tmp/nnn.log
+            if [ "$PREV_BASEDIR" != "$BASEDIR" ]; then
+                # echo "zoxide add $BASEDIR" >> /tmp/nnn.log
+                zoxide add "$BASEDIR" > /dev/null 2>&1
+            fi
+            PREV_BASEDIR="$BASEDIR"
         fi
     done < "$NNN_FIFO"
     sleep 0.1 # make sure potential preview by winch_handler is killed
