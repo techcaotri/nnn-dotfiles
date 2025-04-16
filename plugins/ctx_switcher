@@ -188,14 +188,21 @@ CTX_PATH=$(echo "$SELECTED" | cut -d':' -f3 | /usr/bin/sed 's/ \[ACTIVE\]$//')
 
 # Switch panes if needed
 if [ "$PANE_NAME" != "Current" ]; then
-	# Switch to the other pane
-	tmux select-pane -t :.+
+  CURRENT_PANE=$(tmux display-message -p '#{pane_id}')
+
+  tmux list-panes -F '#{pane_id} #{pane_current_command}' | while read -r PANE_ID PANE_CMD; do
+    # If this pane is running 'nnn' and it isn't the current pane, select it
+    if [ "$PANE_CMD" = "nnn" ] && [ "$PANE_ID" != "$CURRENT_PANE" ]; then
+      tmux select-pane -t "$PANE_ID"
+      break
+    fi
+  done
 
 	# Send the context number to the other pane's nnn
-  tmux send-keys -t : . $CTX_NUM 
+  tmux send-keys -t :. $CTX_NUM 
 else
 	# Switch to the selected context in current pane
-  tmux send-keys -t : . $CTX_NUM 
+  tmux send-keys -t :. $CTX_NUM 
 fi
 
 exit 0
