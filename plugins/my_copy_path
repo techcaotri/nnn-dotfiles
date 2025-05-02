@@ -29,14 +29,14 @@ IFS="${IFS%_}" # protect trailing \n
 # selection=${NNN_SEL:-${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.selection}
 PWD=$PWD
 selection="$PWD/$1"
-echo $selection >>/tmp/nnn.log
+#echo $selection >>/tmp/nnn.log
 [ -e "$selection" ] || {
   echo "plugin my_copy_path error: empty selection" >&2
   exit 1
 }
 
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
-  echo "Wayland session" >>/tmp/nnn.log
+  #echo "Wayland session" >>/tmp/nnn.log
   # Wayland
   printf "%s" "$selection" | wl-copy
   printf "%s" "$selection" | wl-copy --primary
