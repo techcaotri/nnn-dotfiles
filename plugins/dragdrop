@@ -61,10 +61,10 @@ if [ "$resp" = "s" ]; then
     sed -z 's|'"$PWD/"'||g' < "$selection" | xargs -0 "$dnd" "$all" &
 elif [ "$resp" = "d" ]; then
     use_all
-    "$dnd" "$all" "$PWD/"* &
+    "$dnd" "$all" "$PWD/"* >/dev/null 2>&1 & 
 elif [ "$resp" = "r" ]; then
     true > "$selection"
-    "$dnd" --print-path --target | while read -r f
+    "$dnd" --print-path --target >/dev/null 2>&1 | while read -r f
     do
             if printf "%s" "$f" | grep '^\(https\?\|ftps\?\|s\?ftp\):\/\/' ; then
                     curl -LJO "$f"
@@ -75,7 +75,7 @@ elif [ "$resp" = "r" ]; then
     done &
 else
     if [ -n "$1" ] && [ -e "$1" ]; then
-        "$dnd" "$1" &
+        "$dnd" "$1" >/dev/null 2>&1 &
     fi
 fi
 
