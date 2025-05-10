@@ -453,7 +453,14 @@ image_preview() {
         kitty +kitten icat --silent --scale-up --place "$1"x"$2"@0x0 --transfer-mode=stream --stdin=no "$3" &
     elif [ "$NNN_TERMINAL" = "tmux" ]; then
         echo "image_preview - tmux: 1: $1, 2: $2, 3: $3" >> /tmp/nnn.log
-        ueberzug_layer "$1" "$2" "$3" && return
+        if [ "$WEZTERM_WSL" = "1" ]; then
+          echo "test" >> /tmp/nnn.log
+          echo "wezterm imgcat --position $1, $2 --no-move-cursor \"$3\" &" >> /tmp/nnn.log
+
+          wezterm imgcat --position $1, $2 --no-move-cursor --hold "$3"
+        else
+          ueberzug_layer "$1" "$2" "$3" && return
+        fi
         # echo "image_preview - kitty: 1: $1, 2: $2, 3: $3" >> /tmp/nnn.log
         # kitty +kitten icat --silent --place "$1"x"$2"@0x0 --transfer-mode=memory --stdin=no "$3" &
         # chafa --fit-width "$3" &
