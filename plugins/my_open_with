@@ -49,6 +49,7 @@ if [ -d "$entry" ]; then
 	echo "  5. Open in new tmux window"
 	echo "  6. Follow folder link in nnn"
 	echo "  7. rsync to my Desktop machine"
+  echo "  8. Open with Cursor AI IDE"
 	read -r -p "Action: " ans
 	case $ans in
 	1)
@@ -66,9 +67,10 @@ if [ -d "$entry" ]; then
 	5)
 		tmux new-window -c "$entry"
 		;;
-	*)
-		# Fall-through
-		;&
+	7)
+    echo myrsync_local.sh "$entry" >&2
+		myrsync_local.sh "$entry"
+		;;
 	6)
 		if [ -n "$entry" ]; then
 			if [ "$entry" = "." ] || { ! [ -d "$entry" ] && ! [ -f "$entry" ]; }; then
@@ -93,19 +95,14 @@ if [ -d "$entry" ]; then
 			esac
 		fi
 		;;
-	7)
-		myrsync_local.sh "$entry"
-		;;
+  8)
+    echo $(which cursor) >&2
+    echo cursor "$entry" >&2
+    cursor "$entry" >/dev/null 2>&1 &
+    ;;
 	esac
 else
 	case "$($cmd_file "$entry")" in
-	*text*)
-		editor_cmd="${VISUAL:-$EDITOR}"
-		if [ -z "$editor_cmd" ]; then
-			editor_cmd=$cmd_open
-		fi
-		$editor_cmd "$entry"
-		;;
 	*)
 		$cmd_open "$entry"
 		;;

@@ -54,24 +54,48 @@ fi
 
 if [ "$resp" = "s" ]; then
     use_all
-    sed -z 's|'"$PWD/"'||g' < "$selection" | xargs -0 "$dnd" "$all" &
+    if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+      sed -z 's|'"$PWD/"'||g' < "$selection" | xargs -0 ripdrag -r -a >/dev/null 2>&1 &
+    else
+      sed -z 's|'"$PWD/"'||g' < "$selection" | xargs -0 "$dnd" "$all" &
+    fi
 elif [ "$resp" = "d" ]; then
     use_all
-    "$dnd" "$all" "$PWD/"* &
+    if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+      ripdrag -r -a "$PWD/"* >/dev/null 2>&1 &
+    else
+      "$dnd" "$all" "$PWD/"* >/dev/null 2>&1 & 
+    fi
 elif [ "$resp" = "r" ]; then
     true > "$selection"
-    "$dnd" --print-path --target | while read -r f
-    do
-            if printf "%s" "$f" | grep '^\(https\?\|ftps\?\|s\?ftp\):\/\/' ; then
-                    curl -LJO "$f"
-                    add_file "$PWD/$(basename "$f")"
-            elif [ -e "$f" ]; then
-                    add_file "$f"
-            fi
-    done &
+    if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+      ripdrag -r -a >/dev/null 2>&1 | while read -r f
+      do
+              if printf "%s" "$f" | grep '^\(https\?\|ftps\?\|s\?ftp\):\/\/' ; then
+                      curl -LJO "$f"
+                      add_file "$PWD/$(basename "$f")"
+              elif [ -e "$f" ]; then
+                      add_file "$f"
+              fi
+      done &
+    else
+      "$dnd" --print-path --target >/dev/null 2>&1 | while read -r f
+      do
+              if printf "%s" "$f" | grep '^\(https\?\|ftps\?\|s\?ftp\):\/\/' ; then
+                      curl -LJO "$f"
+                      add_file "$PWD/$(basename "$f")"
+              elif [ -e "$f" ]; then
+                      add_file "$f"
+              fi
+      done &
+    fi
 else
     if [ -n "$1" ] && [ -e "$1" ]; then
-        "$dnd" "$1" &
+      if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+        ripdrag -r -a "$1" >/dev/null 2>&1 &
+      else
+        "$dnd" "$1" >/dev/null 2>&1 &
+      fi
     fi
 fi
 

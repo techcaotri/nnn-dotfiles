@@ -64,24 +64,44 @@ if [ "$USE_NUKE" -ne 0 ]; then
     exit 0
 fi
 
-# Open the file (works for a single file only)
-cmd_file=""
-cmd_open=""
-if uname | grep -q "Darwin"; then
-    cmd_file="file -bIL"
-    cmd_open="open"
-else
-    cmd_file="file -biL"
-    cmd_open="mimeopen_bg -D -a"
+if [ -z "$entry" ]; then
+    exit 0
 fi
 
-case "$($cmd_file "$entry")" in
-    *text*)
-        editor_cmd="${VISUAL:-$EDITOR}"
-        if [ -z "$editor_cmd" ]; then
-            editor_cmd=$cmd_open
+# Open the file (works for a single file only)
+echo "**********************************************************"
+echo "> Selected file: $entry\n"
+echo "Please choose the action to proceed:\n"
+echo "  1. Open with LunarVim (tol)"
+echo "  2. Open with NeoVim (ton)"
+echo "  3. Open with Visual Studio Code - Insiders"
+echo "  4. Open with mimeopen_bg" 
+echo "  5. Open with mimeopen_bg (magic only)" 
+echo "  6. Copy absolute path to clipboard" 
+read -r -p "Action: " ans
+case $ans in
+    1)
+        tol "$entry";;
+    2)
+        ton "$entry";;
+    3)
+        code-insiders "$entry";;
+    4)
+        mimeopen_bg "$entry";;
+    5)
+        mimeopen_bg -M "$entry";;
+    6)
+        if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+          # Wayland
+          tr '\0' '\n' < "$selection" | wl-copy
+        elif type xsel >/dev/null 2>&1; then
+          # Linux 
+          xsel -d && echo "$selection" | tr '\0' '\n' | sed -z 's/[ \t]*\n$//' | xsel -bi
+        elif type xclip >/dev/null 2>&1; then
+          # Linux
+          tr '\0' '\n' < "$selection" | xclip -sel clip
         fi
-        $editor_cmd "$entry" ;;
+        ;;
     *)
-        $cmd_open "$entry" ;;
+        exit;;
 esac

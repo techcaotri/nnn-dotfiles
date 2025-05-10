@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+
+clear
+
+title_fzf="Grep Name/File"
+
+# shellcheck disable=SC1090,SC1091
+. "$(dirname "$0")"/.nnn-plugin-helper
+
+nnn_banner "$title_fzf"
+
+if ! type fzf >/dev/null 2>&1; then
+	printf "fzf missing"
+	read -r _
+	exit 1
+fi
+
+if not_in_tmux; then
+	if [ "$TERM_PROGRAM" = "WezTerm" ]; then
+
+		pane_id_right=$(wezterm cli get-pane-direction right)
+		wezterm cli split-pane --bottom --move-pane-id "$pane_id_right" >/dev/null
+		wezterm cli activate-pane-direction Up
+
+		select="$(echo -e 'Grep string in file\nSearch name of file' | fzf)"
+
+		wezterm cli split-pane --right --move-pane-id "$pane_id_right" --percent 85 >/dev/null
+		wezterm cli activate-pane-direction Left
+
+		wezterm cli split-pane --right --move-pane-id "$pane_id_right" --percent 85 >/dev/null
+		wezterm cli activate-pane-direction Left
+	else
+		select="$(echo -e 'Grep string in file\nSearch name of file' | fzf)"
+	fi
+else
+	select="$(echo -e 'Grep string in file\nSearch name of file' | fzf-tmux -xC -w '60%' -h '50%' --prompt "$title_fzf> ")"
+fi
+
+if [[ "$select" == "Grep string in file" ]]; then
+	if not_in_tmux; then
+		if [ "$TERM_PROGRAM" = "WezTerm" ]; then
+			pane_id_right=$(wezterm cli get-pane-direction right)
+			wezterm cli split-pane --bottom --move-pane-id "$pane_id_right" >/dev/null
+			wezterm cli activate-pane-direction Up
+
+			res="$(
+				RG_PREFIX="rg --column --line-number --no-heading --hidden --follow --color=always \
+              --smart-case "
+				FZF_DEFAULT_COMMAND="$RG_PREFIX ''" \
+					fzf-tmux --bind "change:reload:$RG_PREFIX {q} || true" \
+					--ansi --layout=reverse -xC -w '80%' -h '80%' --header "$select" --prompt "Grep string> " |
+					cut -d':' -f1
+			)"
+
+			wezterm cli split-pane --right --move-pane-id "$pane_id_right" --percent 85 >/dev/null
+			wezterm cli activate-pane-direction Left
+
+			wezterm cli split-pane --right --move-pane-id "$pane_id_right" --percent 85 >/dev/null
+			wezterm cli activate-pane-direction Left
+
+		else
+			res="$(
+				RG_PREFIX="rg --column --line-number --no-heading --hidden --follow --color=always \
+              --smart-case "
+				FZF_DEFAULT_COMMAND="$RG_PREFIX ''" \
+					fzf-tmux --bind "change:reload:$RG_PREFIX {q} || true" \
+					--ansi --layout=reverse -xC -w '80%' -h '80%' --header "$select" --prompt "Grep string> " |
+					cut -d':' -f1
+			)"
+
+		fi
+	else
+		res="$(
+			RG_PREFIX="rg --column --line-number --no-heading --hidden --follow --color=always \
+              --smart-case "
+			FZF_DEFAULT_COMMAND="$RG_PREFIX ''" \
+				fzf-tmux --bind "change:reload:$RG_PREFIX {q} || true" \
+				--ansi --layout=reverse -xC -w '80%' -h '80%' --header "$select" --prompt "Grep string> " |
+				cut -d':' -f1
+		)"
+
+    notify-send "$(pwd)/$res"
+		tol "$res"
+	fi
+
+elif [[ "$select" == "Search name of file" ]]; then
+	if not_in_tmux; then
+		if [ "$TERM_PROGRAM" = "WezTerm" ]; then
+			pane_id_right=$(wezterm cli get-pane-direction right)
+			wezterm cli split-pane --bottom --move-pane-id "$pane_id_right" >/dev/null
+			wezterm cli activate-pane-direction Up
+
+			res="$(
+				RG_PREFIX="fd --color=never --type f --hidden --follow --exclude .git "
+				FZF_DEFAULT_COMMAND="$RG_PREFIX ''" \
+					fzf-tmux --bind "change:reload:$RG_PREFIX {q} || true" \
+					--ansi --layout=reverse -xC -w '80%' -h '80%' --header "$select" --prompt "Find and Select file> " |
+					cut -d':' -f1
+			)"
+
+			wezterm cli split-pane --right --move-pane-id "$pane_id_right" --percent 85 >/dev/null
+			wezterm cli activate-pane-direction Left
+
+			wezterm cli split-pane --right --move-pane-id "$pane_id_right" --percent 85 >/dev/null
+			wezterm cli activate-pane-direction Left
+		else
+			res="$(
+				RG_PREFIX="fd --color=never --type f --hidden --follow --exclude .git "
+				FZF_DEFAULT_COMMAND="$RG_PREFIX ''" \
+					fzf-tmux --bind "change:reload:$RG_PREFIX {q} || true" \
+					--ansi --layout=reverse -xC -w '80%' -h '80%' --header "$select" --prompt "Find and Select file> " |
+					cut -d':' -f1
+			)"
+		fi
+	else
+		res="$(
+			# RG_PREFIX="fd --color=never --type f --hidden --follow --exclude .git "
+			RG_PREFIX="fd --hidden --follow --exclude .git -I"
+			FZF_DEFAULT_COMMAND="$RG_PREFIX ''" \
+				fzf-tmux --bind "change:reload:$RG_PREFIX {q} || true" \
+				--ansi --layout=reverse -xC -w '80%' -h '80%' --header "$select" --prompt "Find and Select file> " |
+				cut -d':' -f1
+		)"
+    full_path="$(pwd)/$res"
+    notify-send "$full_path"
+		if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+			# Wayland
+      tr '\0' '\n' <"$full_path" | wl-copy
+		elif type xsel >/dev/null 2>&1; then
+			# Linux
+			xsel -d && echo "$full_path" | tr '\0' '\n' | sed -z 's/[ \t]*\n$//' | xsel -bi
+		elif type xclip >/dev/null 2>&1; then
+			# Linux
+			tr '\0' '\n' <"$full_path" | xclip -sel clip
+		fi
+	fi
+fi
+
+#[ -n "$res" ] && nnn "$res"
