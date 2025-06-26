@@ -424,20 +424,26 @@ generate_preview() {
             epub) gnome-epub-thumbnailer "$3" "$NNN_PREVIEWDIR/$3.jpg" ;;
             font) fontpreview -i "$3" -o "$NNN_PREVIEWDIR/$3.jpg" ;;
             gif) if [ -p "$FIFO_UEBERZUG" ] && exists convert; then
-                    frameprefix="$NNN_PREVIEWDIR/$3/${3##*/}"
-                    if [ ! -d "$NNN_PREVIEWDIR/$3" ]; then
-                        mkdir -p "$NNN_PREVIEWDIR/$3"
-                        convert -coalesce -resize "$NNN_PREVIEWWIDTH"x"$NNN_PREVIEWHEIGHT"\> "$3" "$frameprefix.jpg" ||
-                        MAGICK_TMPDIR="/tmp" convert -coalesce -resize "$NNN_PREVIEWWIDTH"x"$NNN_PREVIEWHEIGHT"\> "$3" "$frameprefix.jpg"
-                    fi
-                    frames=$(($(find "$NNN_PREVIEWDIR/$3" | wc -l) - 2))
-                    [ $frames -lt 0 ] && return
-                    while true; do
-                        for i in $(seq 0 $frames); do
-                            image_preview "$1" "$2" "$frameprefix-$i.jpg"
-                            sleep 0.1
-                        done
-                    done &
+                    # frameprefix="$NNN_PREVIEWDIR/$3/${3##*/}"
+                    # if [ ! -d "$NNN_PREVIEWDIR/$3" ]; then
+                    #     mkdir -p "$NNN_PREVIEWDIR/$3"
+                    #     convert -coalesce -resize "$NNN_PREVIEWWIDTH"x"$NNN_PREVIEWHEIGHT"\> "$3" "$frameprefix.jpg" ||
+                    #     MAGICK_TMPDIR="/tmp" convert -coalesce -resize "$NNN_PREVIEWWIDTH"x"$NNN_PREVIEWHEIGHT"\> "$3" "$frameprefix.jpg"
+                    # fi
+                    # frames=$(($(find "$NNN_PREVIEWDIR/$3" | wc -l) - 2))
+                    # [ $frames -lt 0 ] && return
+                    # while true; do
+                    #     for i in $(seq 0 $frames); do
+                    #         image_preview "$1" "$2" "$frameprefix-$i.jpg"
+                    #         sleep 0.1
+                    #     done
+                    # done &
+
+                    # TriPham: just convert and display the first frame
+                    convert -resize "$NNN_PREVIEWWIDTH"x"$NNN_PREVIEWHEIGHT"\> "$3[0]" "$NNN_PREVIEWDIR/$3.jpg" 
+                    image_preview "$1" "$2" "$NNN_PREVIEWDIR/$3.jpg"
+                    sleep 0.1
+
                     printf "%s" "$!" > "$PREVIEWPID"
                     return
                  elif [ -n "$NNN_PREVIEWVIDEO" ]; then
