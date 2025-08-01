@@ -32,11 +32,11 @@ if [ "$XDG_SESSION_TYPE" == "wayland" ]; then
   # as we need to  copy the file path, not the file content
   printf "%s" "$path" | wl-copy
   printf "%s" "$path" | wl-copy --primary
-  send_notification $path
+  send_notification "$path"
 elif [ "$XDG_SESSION_TYPE" == "x11" ]; then
   printf "%s" "$path" | xclip -selection clipboard
   printf "%s" "$path" | xclip -selection primary
-  send_notification
+  send_notification "$path"
 else
   printf "ERROR: Unrecognized session type"
 fi
