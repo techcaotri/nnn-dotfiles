@@ -1,74 +1,71 @@
 #!/usr/bin/env bash
-# my_trash_restore - fuzzy-restore files deleted by nnn (x / Ctrl-X) via fzf.
+# my_trash_restore - fuzzy-restore trashed files using trash-cli's own
+# `trash-restore`, so restoring is 100% consistent with how trashing was done
+# (correct .trashinfo cleanup, all trash cans, no manual inode/mv juggling).
 #
-# Requires: trash-cli (for trashing), fzf.
-# Scope:    restores from the HOME trash can
-#           (${XDG_DATA_HOME:-$HOME/.local/share}/Trash).
-#           For files deleted from external drives / other mounts, use the
-#           `trash-list` + `trash-restore` CLI instead (they scan all cans).
+# How it works:
+#   1. Ask `trash-restore` for its canonical, indexed candidate list (feeding
+#      empty input so it prints the menu and restores nothing).
+#   2. Let you fuzzy-pick one or many lines in fzf. Each line carries the exact
+#      index `trash-restore` assigned to it (field 1), so duplicates of the same
+#      path at different deletion times stay unambiguous.
+#   3. Feed the chosen indices back to a single `trash-restore` run as a
+#      comma-separated list (supported since trash-cli ~0.22+).
 #
-# Install:  put in ~/.config/nnn/plugins/ , chmod +x , add `r:my_trash_restore`
-#           to NNN_PLUG, then invoke inside nnn with  ;r
+# Requires: trash-cli (>= ~0.22, tested on 0.24.x), fzf.
+# Install:  ~/.config/nnn/plugins/my_trash_restore  (chmod +x);
+#           NNN_PLUG entry `r:my_trash_restore`; invoke inside nnn with  ;r
 
 set -u
 
-TRASH_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/Trash"
-INFO="$TRASH_DIR/info"
-FILES="$TRASH_DIR/files"
+# Scope of the candidate list, used IDENTICALLY for listing and restoring so
+# the indices match. "/" = whole trash can. Use "." for current-dir subtree only.
+FILTER="/"
+# Sort order must also match between the two trash-restore calls.
+SORT="date"
 
-pause() { printf '\n%s' "Press any key to continue..."; read -r _ <"${1:-/dev/tty}"; }
+pause() { printf '\n%s' 'Press any key to continue...'; read -r _ </dev/tty; }
 
-command -v fzf >/dev/null 2>&1 || { echo "fzf not found."; pause; exit 1; }
+for c in trash-restore fzf; do
+    command -v "$c" >/dev/null 2>&1 || { echo "$c not found in PATH."; pause; exit 1; }
+done
 
-if [ ! -d "$INFO" ] || [ -z "$(ls -A "$INFO" 2>/dev/null)" ]; then
-    echo "Home trash is empty (nothing to restore)."
+# 1. Canonical indexed menu, exactly as trash-restore numbers it. Empty stdin
+#    makes it print the list and restore nothing. Keep only "<idx> <date> <path>".
+menu=$(printf '\n' | trash-restore --sort="$SORT" "$FILTER" 2>/dev/null \
+        | grep -E '^[[:space:]]*[0-9]+[[:space:]]')
+
+if [ -z "$menu" ]; then
+    echo "Trash is empty (nothing to restore)."
     pause
     exit 0
 fi
 
-# RFC 2396 percent-decode (handles %20 etc.). bash printf %b understands \xHH.
-urldecode() { local s="${1//+/ }"; printf '%b' "${s//%/\\x}"; }
-
-# Build:  <DeletionDate> \t <decoded original path> \t <trashinfo basename>
-build_list() {
-    local f p d base
-    for f in "$INFO"/*.trashinfo; do
-        [ -e "$f" ] || continue
-        p=$(awk -F= '/^Path=/{sub(/^Path=/,"");print;exit}' "$f")
-        d=$(awk -F= '/^DeletionDate=/{sub(/^DeletionDate=/,"");print;exit}' "$f")
-        base=$(basename "$f" .trashinfo)
-        printf '%s\t%s\t%s\n' "$d" "$(urldecode "$p")" "$base"
-    done
-}
-
-# Pick entries. Show only date + path (cols 1,2); basename (col 3) is the key.
-selection=$(build_list | sort -r | fzf \
+# 2. Fuzzy-pick. Field 1 of each line is the index trash-restore will accept.
+chosen=$(printf '%s\n' "$menu" | fzf \
     --multi \
-    --delimiter='\t' \
-    --with-nth=1,2 \
     --prompt='restore > ' \
     --header=$'TAB: multi-select   ENTER: restore   ESC: cancel' \
-    --preview='printf "Deleted from:\n  %s\n\nDeleted on:\n  %s\n" {2} {1}' \
-    --preview-window=down,3,wrap) || exit 0
+    --preview='printf %s {}' \
+    --preview-window=down,2,wrap) || exit 0
 
-[ -z "$selection" ] && exit 0
+[ -z "$chosen" ] && exit 0
 
-ok=0; fail=0
-printf '%s\n' "$selection" | while IFS=$'\t' read -r d path base; do
-    src="$FILES/$base"
-    [ -e "$src" ] || { echo "MISSING in trash: $path"; fail=$((fail+1)); continue; }
-    mkdir -p "$(dirname "$path")"
-    dest="$path"
-    [ -e "$dest" ] && dest="${path}.restored.$(date +%s)"   # never clobber
-    if mv -n "$src" "$dest"; then
-        rm -f "$INFO/$base.trashinfo"
-        [ "$dest" = "$path" ] && echo "restored: $path" \
-                              || echo "restored (renamed to avoid clobber): $dest"
-        ok=$((ok+1))
-    else
-        echo "FAILED:   $path"
-        fail=$((fail+1))
-    fi
-done
+# 3. Indices -> comma list -> one trash-restore run (same FILTER/SORT => same
+#    numbering as the menu we just showed).
+indices=$(printf '%s\n' "$chosen" | awk '{printf "%s%s", sep, $1; sep=","} END{print ""}')
+
+echo "Asking trash-restore to restore index(es): $indices"
+echo
+out=$(printf '%s\n' "$indices" | trash-restore --sort="$SORT" "$FILTER" 2>&1)
+rc=$?
+[ -n "$out" ] && printf '%s\n' "$out"
+
+if [ "$rc" -ne 0 ] || printf '%s' "$out" | grep -qi 'refusing to overwrite'; then
+    echo
+    echo "Note: items whose original path already exists were NOT restored"
+    echo "(trash-restore refuses to overwrite by default)."
+    echo "To force-overwrite a specific one:  trash-restore --overwrite <path>"
+fi
 
 pause
