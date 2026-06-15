@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+#
+# cpmv: FileZilla-style copy/move with per-conflict resolution for nnn.
+#
+# Invoked by FZ_CPMV-patched nnn when 'p' (copy here) or 'v' (move here) is
+# pressed. nnn calls it as:
+#
+#     cpmv "<op>" "<selection-file>" "<dest-dir>"
+#
+#   <op>  nnn's cp/mv command string, e.g. "cp -iRp --", "mv -i --",
+#         "cpg -giRp --", "mvg -gi --". Only its FIRST token is used, to tell
+#         copy from move (and whether advcpmv cpg/mvg progress is in play).
+#   <sel> NUL-separated selection file (nnn's selpath).
+#   <dest> destination dir, passed as "." by nnn; resolved to $PWD here.
+#
+# stdin is /dev/tty (nnn runs this under spawn F_CLI), so the prompts work.
+#
+# For a single regular-FILE conflict, nnn's original simple y/N overwrite prompt
+# is used. For a single DIRECTORY conflict or any MULTIPLE-item conflict, the
+# full FileZilla overwrite options plus a "resume" mode are shown, with an
+# "apply to ALL remaining conflicts" prompt offered only while items still
+# remain. Returns to nnn automatically (no keypress) when there is no conflict or
+# only a single item; pauses for review only after resolving conflicts across
+# several items.
+#
+# Requires: bash, coreutils. rsync is needed for the size-based and resume
+#           modes (3/4/5); without it those modes skip rather than guess.
+#
+# Shell version: ENGLISH
+#
+# Authors: Tri Pham
+
+set -u
+
+OP="${1:-cp}"           # nnn's cp/mv op string; first token = the binary
+sel="${2:-}"            # NUL-separated selection file
+dest="${3:-.}"          # destination dir
+[ "$dest" = "." ] && dest="$PWD"
+
+# Copy vs move is decided reliably from the op string's first token.
+case "${OP%% *}" in
+    mv|mvg) ACT="mv" ;;
+    *)      ACT="cp" ;;
+esac
+
+# Prefer advcpmv (cpg/mvg) for a progress bar when available; else plain cp/mv.
+if [ "$ACT" = cp ]; then
+    if command -v cpg >/dev/null 2>&1; then CMD="cpg -g"; else CMD="cp"; fi
+    BASE="-Rp"
+else
+    if command -v mvg >/dev/null 2>&1; then CMD="mvg -g"; else CMD="mv"; fi
+    BASE=""
+fi
+
+have_rsync=1; command -v rsync >/dev/null 2>&1 || have_rsync=0
+
+# stat(1) is GNU (-c) on Linux but BSD (-f) on *BSD/macOS, where nnn also runs.
+if stat -c '%s' . >/dev/null 2>&1; then
+    fsize()  { stat -c '%s' -- "$1" 2>/dev/null; }
+    fmtime() { stat -c '%y' -- "$1" 2>/dev/null | cut -d. -f1; }
+else
+    fsize()  { stat -f '%z' -- "$1" 2>/dev/null; }
+    fmtime() { stat -f '%Sm' -- "$1" 2>/dev/null; }
+fi
+
+if [ -z "$sel" ] || [ ! -s "$sel" ]; then
+    printf 'cpmv: empty selection.\n'; exit 0
+fi
+
+# nnn writes the selection with the trailing NUL truncated
+# (writesel(pselbuf, selbufpos - 1)), so the LAST path is not NUL-terminated.
+# `|| [ -n "$f" ]` processes that final unterminated field instead of dropping it.
+files=()
+while IFS= read -r -d '' f || [ -n "${f:-}" ]; do
+    files+=("$f"); f=
+done < "$sel"
+
+GLOBAL_MODE=""
+
+rm_src()      { [ "$ACT" = mv ] && rm -rf -- "$1"; }
+needs_rsync() { case "$1" in 3|4|5) return 0 ;; *) return 1 ;; esac; }
+
+rename_one() {
+    local src="$1" base stem ext target n
+    base=$(basename -- "$src"); target="$dest/$base"
+    if [ -e "$target" ]; then
+        case "$base" in
+            ?*.*) stem="${base%.*}"; ext=".${base##*.}" ;;
+            *)    stem="$base";      ext="" ;;
+        esac
+        [ -z "$stem" ] && { stem="$base"; ext=""; }
+        n=1; while [ -e "$dest/$stem ($n)$ext" ]; do n=$((n + 1)); done
+        target="$dest/$stem ($n)$ext"
+    fi
+    # shellcheck disable=SC2086
+    $CMD $BASE -- "$src" "$target"
+}
+
+do_one() {                                # $1=src  $2=mode(1-7)
+    local src="$1" mode="$2"
+    if needs_rsync "$mode" && [ "$have_rsync" -eq 0 ]; then
+        printf '  ! rsync missing; skipped %s\n' "$(basename -- "$src")"; return
+    fi
+    # NOTE: for the rsync-based MOVE modes the source is removed ONLY on a
+    # successful transfer ('&&', never ';') so a failed rsync cannot lose data.
+    # shellcheck disable=SC2086
+    case "$mode" in
+        1) $CMD $BASE -f -- "$src" "$dest/" ;;                                              # overwrite
+        2) $CMD $BASE -u -- "$src" "$dest/" ;;                                              # newer only
+        3) rsync -a --size-only --info=progress2 -- "$src" "$dest/" && rm_src "$src" ;;     # different size
+        4) rsync -a --update    --info=progress2 -- "$src" "$dest/" && rm_src "$src" ;;     # diff size or newer
+        5) rsync -a --partial --append-verify --info=progress2 -- "$src" "$dest/" && rm_src "$src" ;; # resume
+        6) rename_one "$src" ;;                                                             # rename (keep both)
+        7) printf '  - skipped %s\n' "$(basename -- "$src")" ;;                             # skip
+    esac
+}
+
+show_conflict() {
+    local src="$1" tgt="$2"
+    printf '\n  CONFLICT: %s\n' "$(basename -- "$tgt")"
+    printf '    source : %12s bytes   %s\n' "$(fsize "$src")" "$(fmtime "$src")"
+    printf '    target : %12s bytes   %s\n' "$(fsize "$tgt")" "$(fmtime "$tgt")"
+    cat <<'MENU'
+    1) overwrite          2) newer only        3) different size only
+    4) different size or newer                 5) resume (interrupted)
+    6) rename (keep both) 7) skip
+MENU
+}
+
+nfiles=${#files[@]}
+conflicts=0          # count of conflict menus actually shown to the user
+idx=0
+
+printf '%s -> %s   (%d item[s])\n' "$ACT" "$dest" "$nfiles"
+
+for src in "${files[@]}"; do
+    idx=$((idx + 1))
+    target="$dest/$(basename -- "$src")"
+
+    # Never copy/move an item onto itself.
+    if [ -e "$target" ] && [ "$src" -ef "$target" ]; then
+        printf '  - skipped (same file) %s\n' "$(basename -- "$src")"
+        continue
+    fi
+
+    if [ ! -e "$target" ]; then do_one "$src" 1; continue; fi
+    if [ -n "$GLOBAL_MODE" ]; then do_one "$src" "$GLOBAL_MODE"; continue; fi
+
+    # A single regular-FILE conflict keeps nnn's original simple y/N prompt.
+    # A single DIRECTORY (or any multi-item op) gets the full FileZilla menu,
+    # where the size / newer / resume / rename modes are useful across a tree.
+    if [ "$nfiles" -eq 1 ] && [ ! -d "$src" ]; then
+        printf "overwrite '%s'? [y/N]: " "$(basename -- "$target")"
+        read -r yn
+        case "$yn" in y|Y|yes|YES) do_one "$src" 1 ;; *) do_one "$src" 7 ;; esac
+        continue
+    fi
+
+    # Multiple items, or a single directory: full FileZilla per-conflict menu.
+    conflicts=$((conflicts + 1))
+    while :; do
+        show_conflict "$src" "$target"
+        printf '    choose [1-7]: '; read -r choice
+        case "$choice" in 1|2|3|4|5|6|7) break ;; *) printf '    invalid.\n' ;; esac
+    done
+    do_one "$src" "$choice"
+
+    # FileZilla "apply to all": only meaningful while items still remain to be
+    # processed. Skipped for the last item.
+    if [ "$idx" -lt "$nfiles" ]; then
+        printf '    apply to ALL remaining conflicts? [y/N]: '; read -r yn
+        case "$yn" in y|Y|yes|YES) GLOBAL_MODE="$choice" ;; esac
+    fi
+done
+
+# Return to nnn without a keypress, EXCEPT when conflicts were resolved across
+# multiple items (then pause so the user can review the outcome). No conflict,
+# or a single item -> exit immediately.
+if [ "$conflicts" -gt 0 ] && [ "$nfiles" -gt 1 ]; then
+    printf '\nDone. Press enter.'; read -r _
+fi
+exit 0

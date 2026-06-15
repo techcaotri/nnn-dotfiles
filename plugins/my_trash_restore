@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# my_trash_restore - fuzzy-restore files deleted by nnn (x / Ctrl-X) via fzf.
+#
+# Requires: trash-cli (for trashing), fzf.
+# Scope:    restores from the HOME trash can
+#           (${XDG_DATA_HOME:-$HOME/.local/share}/Trash).
+#           For files deleted from external drives / other mounts, use the
+#           `trash-list` + `trash-restore` CLI instead (they scan all cans).
+#
+# Install:  put in ~/.config/nnn/plugins/ , chmod +x , add `r:my_trash_restore`
+#           to NNN_PLUG, then invoke inside nnn with  ;r
+
+set -u
+
+TRASH_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/Trash"
+INFO="$TRASH_DIR/info"
+FILES="$TRASH_DIR/files"
+
+pause() { printf '\n%s' "Press any key to continue..."; read -r _ <"${1:-/dev/tty}"; }
+
+command -v fzf >/dev/null 2>&1 || { echo "fzf not found."; pause; exit 1; }
+
+if [ ! -d "$INFO" ] || [ -z "$(ls -A "$INFO" 2>/dev/null)" ]; then
+    echo "Home trash is empty (nothing to restore)."
+    pause
+    exit 0
+fi
+
+# RFC 2396 percent-decode (handles %20 etc.). bash printf %b understands \xHH.
+urldecode() { local s="${1//+/ }"; printf '%b' "${s//%/\\x}"; }
+
+# Build:  <DeletionDate> \t <decoded original path> \t <trashinfo basename>
+build_list() {
+    local f p d base
+    for f in "$INFO"/*.trashinfo; do
+        [ -e "$f" ] || continue
+        p=$(awk -F= '/^Path=/{sub(/^Path=/,"");print;exit}' "$f")
+        d=$(awk -F= '/^DeletionDate=/{sub(/^DeletionDate=/,"");print;exit}' "$f")
+        base=$(basename "$f" .trashinfo)
+        printf '%s\t%s\t%s\n' "$d" "$(urldecode "$p")" "$base"
+    done
+}
+
+# Pick entries. Show only date + path (cols 1,2); basename (col 3) is the key.
+selection=$(build_list | sort -r | fzf \
+    --multi \
+    --delimiter='\t' \
+    --with-nth=1,2 \
+    --prompt='restore > ' \
+    --header=$'TAB: multi-select   ENTER: restore   ESC: cancel' \
+    --preview='printf "Deleted from:\n  %s\n\nDeleted on:\n  %s\n" {2} {1}' \
+    --preview-window=down,3,wrap) || exit 0
+
+[ -z "$selection" ] && exit 0
+
+ok=0; fail=0
+printf '%s\n' "$selection" | while IFS=$'\t' read -r d path base; do
+    src="$FILES/$base"
+    [ -e "$src" ] || { echo "MISSING in trash: $path"; fail=$((fail+1)); continue; }
+    mkdir -p "$(dirname "$path")"
+    dest="$path"
+    [ -e "$dest" ] && dest="${path}.restored.$(date +%s)"   # never clobber
+    if mv -n "$src" "$dest"; then
+        rm -f "$INFO/$base.trashinfo"
+        [ "$dest" = "$path" ] && echo "restored: $path" \
+                              || echo "restored (renamed to avoid clobber): $dest"
+        ok=$((ok+1))
+    else
+        echo "FAILED:   $path"
+        fail=$((fail+1))
+    fi
+done
+
+pause

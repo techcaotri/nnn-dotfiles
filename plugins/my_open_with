@@ -50,6 +50,7 @@ if [ -d "$entry" ]; then
 	echo "  6. Follow folder link in nnn"
 	echo "  7. rsync to my Desktop machine"
   echo "  8. Open with Cursor AI IDE"
+  echo "  9. Open with Zed IDE"
 	read -r -p "Action: " ans
 	case $ans in
 	1)
@@ -99,6 +100,10 @@ if [ -d "$entry" ]; then
     echo $(which cursor) >&2
     echo cursor "$entry" >&2
     cursor "$entry" >/dev/null 2>&1 &
+    ;;
+  9)
+    echo zed "$entry" >&2
+    zed "$entry" >/dev/null 2>&1 &
     ;;
 	esac
 else
