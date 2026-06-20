@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+#
+# nnn-history: jump to ANY directory recorded in the shared visit log, across
+# all 8 contexts (tabs), all sessions and all running nnn instances (e.g. the
+# dual left/right TMUX panes).
+#
+# It reads the shared log written by nnn (built with O_HIST=1 and run with
+# NNN_HIST=global) at:
+#     ${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.dirhistory
+# Each line is TSV:  ts_nanos \t instance_id \t session \t ctx \t path
+#
+# The plugin dedups by path (keeping the MOST RECENT visit) and shows the list
+# in fzf with the most-recent at the BOTTOM (under the cursor). For the most
+# recent HIST_SWITCH_SCAN (20) entries it ALSO checks whether the directory is
+# currently open in a tab -- this instance's contexts (the nnn-exported $d1..$d8)
+# or the other pane's contexts (parsed from its session file, like the
+# ctx_switcher plugin). If it is, the entry is shown TWICE:
+#   * "switch to tab"  -- jump to the existing tab already showing that dir
+#   * "navigate here"  -- cd the current tab to that dir
+# Otherwise only "navigate here" is offered.
+#
+# Navigate uses the nnn control pipe ($NNN_PIPE, op 'c'). Switch uses the pipe
+# for this instance's tabs and a tmux pane-focus + context keystroke for the
+# other pane's tabs (the same mechanism ctx_switcher uses).
+#
+# Usage:
+#   nnn-history            interactive picker (bind to a key, e.g. ;h via NNN_PLUG)
+#   nnn-history --compact  bound the log to the last $NNN_HIST_CAP unique paths
+#
+# Requires: fzf, awk, coreutils (tac); tmux for the other-pane switch; flock for
+#           safe --compact.
+#
+# Authors: Tri Pham
+
+set -u
+
+HIST="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.dirhistory"
+LOCK="$HIST.lock"
+CAP="${NNN_HIST_CAP:-2000}"
+SCAN="${NNN_HIST_SWITCH_SCAN:-20}"   # only the most-recent N items get the switch check
+SESSIONS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/sessions"
+TAB=$'\t'
+
+pause() { printf '\n%s' 'Press any key to continue...'; read -r _ </dev/tty 2>/dev/null; }
+
+# Most-recent record per path, newest-first, capped to CAP unique entries.
+dedup_newest_first() {
+    tac -- "$HIST" 2>/dev/null | awk -F'\t' '!seen[$5]++' | head -n "$CAP"
+}
+
+# --- compaction: rewrite the log to the last CAP unique paths (oldest..newest) ---
+if [ "${1:-}" = "--compact" ]; then
+    [ -f "$HIST" ] || exit 0
+    exec 9>"$LOCK" 2>/dev/null || exit 0
+    command -v flock >/dev/null 2>&1 && flock 9 2>/dev/null
+    dedup_newest_first | tac > "$HIST.tmp" && mv -f "$HIST.tmp" "$HIST"
+    exit 0
+fi
+
+command -v fzf >/dev/null 2>&1 || { echo "fzf not found in PATH."; pause; exit 1; }
+[ -s "$HIST" ] || { echo "No directory history yet ($HIST)."; pause; exit 0; }
+
+# Opportunistic compaction when the log has grown well past the cap.
+if [ "$(wc -l < "$HIST" 2>/dev/null || echo 0)" -gt $((CAP * 4)) ]; then
+    "$0" --compact 2>/dev/null
+fi
+
+# -----------------------------------------------------------------------------
+# Parse a session file and emit "ctx<TAB>path" for each active context.
+# Adapted from plugins/ctx_switcher (session format v1: see SESSIONS_VERSION).
+# -----------------------------------------------------------------------------
+CTX_MAX=8; SIZE_T=8; SETTINGS_SIZE=4; UINT_SIZE=4
+rd8() { /usr/bin/xxd -p -s "$1" -l 8 "$2" | /usr/bin/xxd -r -p | /usr/bin/hexdump -n 8 -e '1/8 "%d\n"'; }
+
+extract_contexts() {
+    local f="$1" ctx off hoff i
+    [ -f "$f" ] || return
+    [ "$(rd8 0 "$f")" -eq 1 ] 2>/dev/null || return    # SESSIONS_VERSION == 1
+
+    local -a PLEN LLEN NLEN FLEN
+    hoff=8
+    for i in $(seq 0 $((CTX_MAX-1))); do PLEN[$i]=$(rd8 $((hoff + i*SIZE_T)) "$f"); done; hoff=$((hoff + CTX_MAX*SIZE_T))
+    for i in $(seq 0 $((CTX_MAX-1))); do LLEN[$i]=$(rd8 $((hoff + i*SIZE_T)) "$f"); done; hoff=$((hoff + CTX_MAX*SIZE_T))
+    for i in $(seq 0 $((CTX_MAX-1))); do NLEN[$i]=$(rd8 $((hoff + i*SIZE_T)) "$f"); done; hoff=$((hoff + CTX_MAX*SIZE_T))
+    for i in $(seq 0 $((CTX_MAX-1))); do FLEN[$i]=$(rd8 $((hoff + i*SIZE_T)) "$f"); done; hoff=$((hoff + CTX_MAX*SIZE_T))
+
+    off=$((hoff + SETTINGS_SIZE))   # skip global cfg
+    for i in $(seq 0 $((CTX_MAX-1))); do
+        off=$((off + SETTINGS_SIZE + UINT_SIZE + NLEN[$i] + LLEN[$i] + FLEN[$i]))   # skip cfg,color,name,last,fltr
+        if [ "${PLEN[$i]}" -gt 0 ]; then
+            local cpath
+            cpath=$(/usr/bin/xxd -p -s "$off" -l "${PLEN[$i]}" "$f" | /usr/bin/xxd -r -p | /usr/bin/tr -d '\000' | /usr/bin/sed 's/[[:space:]]*$//')
+            [ -n "$cpath" ] && printf '%s\t%s\n' "$((i+1))" "$cpath"
+        fi
+        off=$((off + PLEN[$i]))
+    done
+}
+
+# -----------------------------------------------------------------------------
+# Gather the CURRENTLY-OPEN tabs into CTXLIST lines:  target<TAB>ctx<TAB>path
+#   target = C  -> a context of THIS instance (switch via $NNN_PIPE)
+#          = O  -> a context of the OTHER pane  (switch via tmux focus + key)
+# This instance's contexts come from nnn's exported $d1..$d8 (authoritative);
+# the other pane's come from its session file (left/right), tmux-detected.
+# -----------------------------------------------------------------------------
+CTXLIST=""
+for i in 1 2 3 4 5 6 7 8; do
+    eval "p=\${d$i:-}"
+    [ -n "${p:-}" ] && CTXLIST+="C${TAB}${i}${TAB}${p}"$'\n'
+done
+
+OTHER_NAME=""
+if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
+    if [ "$(tmux display-message -p '#{pane_index}' 2>/dev/null)" = "1" ]; then
+        OTHER_SESSION="$SESSIONS_DIR/right"; OTHER_NAME="right"
+    else
+        OTHER_SESSION="$SESSIONS_DIR/left";  OTHER_NAME="left"
+    fi
+    while IFS=$'\t' read -r octx opath; do
+        [ -n "${opath:-}" ] && CTXLIST+="O${TAB}${octx}${TAB}${opath}"$'\n'
+    done < <(extract_contexts "$OTHER_SESSION")
+fi
+
+# Look up open tabs for a given path -> emits "target<TAB>ctx" lines (may be none/many).
+tabs_for_path() { printf '%s' "$CTXLIST" | awk -F'\t' -v p="$1" '$3 == p { printf "%s\t%s\n", $1, $2 }'; }
+
+# -----------------------------------------------------------------------------
+# Build the menu. Records are TAB-delimited:  kind<TAB>target<TAB>ctx<TAB>path<TAB>display
+#   kind=NAV -> navigate here (pipe);  kind=SW -> switch to tab.
+# fzf shows only the display field. Newest-first so the newest lands at the
+# bottom (fzf default layout). The current dir ($PWD) is excluded.
+# -----------------------------------------------------------------------------
+records=$(dedup_newest_first | awk -F'\t' -v cur="$PWD" '$5 != cur { print $5 }')   # newest-first unique paths
+[ -z "$records" ] && { echo "No other directories in history yet."; pause; exit 0; }
+
+emit() { # $1=path  $2=do_switch(1/0)
+    local path="$1" want_switch="$2" tgt ctx label
+    printf 'NAV\t-\t-\t%s\t  cd        %s\n' "$path" "$path"
+    [ "$want_switch" = 1 ] || return
+    while IFS=$'\t' read -r tgt ctx; do
+        [ -n "${ctx:-}" ] || continue
+        if [ "$tgt" = C ]; then label="here"; else label="$OTHER_NAME"; fi
+        printf 'SW\t%s\t%s\t%s\t> switch [%s ctx%s]  %s\n' "$tgt" "$ctx" "$path" "$label" "$ctx" "$path"
+    done < <(tabs_for_path "$path")
+}
+
+menu=$(
+    n=0
+    while IFS= read -r path; do
+        n=$((n+1))
+        if [ "$n" -le "$SCAN" ]; then emit "$path" 1; else emit "$path" 0; fi
+    done <<< "$records"
+)
+
+chosen=$(printf '%s\n' "$menu" | fzf \
+    --delimiter='\t' --with-nth=5 \
+    --prompt='history > ' \
+    --header=$'ENTER: act   ESC: cancel   (newest at the bottom; > = switch to an open tab)' \
+    --preview='printf %s {4}' \
+    --preview-window=down,1,wrap) || exit 0
+
+[ -z "$chosen" ] && exit 0
+
+IFS=$'\t' read -r kind target ctx path _disp <<< "$chosen"
+[ -n "${path:-}" ] || exit 0
+
+if [ "$kind" = SW ]; then
+    if [ "$target" = C ]; then
+        # Switch THIS instance to context $ctx (re-cd to its own path == just switch).
+        [ -n "${NNN_PIPE:-}" ] && printf '%s' "${ctx}c${path}" > "$NNN_PIPE"
+    else
+        # Focus the OTHER nnn pane and send the context number to switch its tab.
+        if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
+            cur_pane=$(tmux display-message -p '#{pane_id}')
+            other_pane=$(tmux list-panes -F '#{pane_id} #{pane_current_command}' \
+                | awk -v c="$cur_pane" '$2=="nnn" && $1!=c {print $1; exit}')
+            if [ -n "$other_pane" ]; then
+                tmux select-pane -t "$other_pane"
+                tmux send-keys -t "$other_pane" "$ctx"
+            fi
+        fi
+    fi
+    exit 0
+fi
+
+# kind == NAV: navigate the current tab to the chosen directory.
+[ -d "$path" ] || { printf 'Directory no longer exists:\n  %s\n' "$path"; pause; exit 1; }
+if [ -n "${NNN_PIPE:-}" ]; then
+    printf '%s' "0c$path" > "$NNN_PIPE"
+else
+    echo "NNN_PIPE is not set (run this from inside nnn)."; pause; exit 1
+fi

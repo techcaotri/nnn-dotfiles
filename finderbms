@@ -15,3 +15,5 @@ $rg -l0 "indent-blankline"
 $rg -l0 PWM_POLARITY_NORMAL
 $rg "&inc_dec_mwh"
 $rg lgcc_s
+$rg "swap"
+$rg "swap"
