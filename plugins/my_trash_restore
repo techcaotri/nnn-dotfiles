@@ -42,10 +42,16 @@ if [ -z "$menu" ]; then
 fi
 
 # 2. Fuzzy-pick. Field 1 of each line is the index trash-restore will accept.
-chosen=$(printf '%s\n' "$menu" | fzf \
+#    Display order: most-recently-deleted at the BOTTOM. trash-restore --sort=date
+#    lists oldest->newest; `tac` reverses that to newest-first, and fzf's default
+#    layout anchors the first input line at the bottom (with the cursor on it),
+#    so the newest deletion ends up at the bottom, ready to restore. Reordering
+#    the display is safe: the index (field 1) travels with each line, so the
+#    item restored does not depend on display order.
+chosen=$(printf '%s\n' "$menu" | tac | fzf \
     --multi \
     --prompt='restore > ' \
-    --header=$'TAB: multi-select   ENTER: restore   ESC: cancel' \
+    --header=$'TAB: multi-select   ENTER: restore   ESC: cancel   (newest at bottom)' \
     --preview='printf %s {}' \
     --preview-window=down,2,wrap) || exit 0
 
