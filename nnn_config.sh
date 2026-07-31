@@ -2,7 +2,11 @@
 # NOTE: added `r:my_trash_restore` plugin shortcut (invoke with ;r)
 # NOTE: added `h:nnn-history` plugin shortcut (invoke with ;h) -- jump to any
 #       directory visited in any tab/session/instance (needs O_HIST + NNN_HIST).
-export NNN_PLUG='*:fzplug;/:fzsearch;c:my_copy_path;C:my_fz_cmd;d:dragdrop;e:!code-insiders "$nnn"*;E:!code-insiders "$(dirname "$nnn")"*;f:my_fj_cmd;F:fzcd;h:nnn-history;j:my_z_cmd;i:my_fzf_image_preview;I:imgview;l:my_lfrun;o:my_open_with;O:my_open_with_options;p:preview-tui;Q:my_nnn_quitall;n:cppath;r:my_trash_restore;s:my_fz_open_with;t:preview-tabbed;v:vidthumb;w:ctx_switcher;x:!ark -ba "$nnn" 2>/dev/null 1>/dev/null & *;X:!chmod +x $nnn;z:my_zi_cmd;'
+# NOTE: added `S:nnn-sessions` plugin shortcut (invoke with ;S) -- view and
+#       manage sessions: preview all 8 contexts, activate, snapshot/restore,
+#       rename/delete/duplicate, workspace capture (needs O_SSN_PIPE for a
+#       full-fidelity activate/restore).
+export NNN_PLUG='*:fzplug;/:fzsearch;c:my_copy_path;C:my_fz_cmd;d:dragdrop;e:!code-insiders "$nnn"*;E:!code-insiders "$(dirname "$nnn")"*;f:my_fj_cmd;F:fzcd;h:nnn-history;j:my_z_cmd;i:my_fzf_image_preview;I:imgview;l:my_lfrun;o:my_open_with;O:my_open_with_options;p:preview-tui;Q:my_nnn_quitall;n:cppath;r:my_trash_restore;s:my_fz_open_with;S:nnn-sessions;t:preview-tabbed;v:vidthumb;w:ctx_switcher;x:!ark -ba "$nnn" 2>/dev/null 1>/dev/null & *;X:!chmod +x $nnn;z:my_zi_cmd;'
 export NNN_FCOLORS='c1e2272e006033f7c6d6abc4'
 alias nnn=nnn_left
 alias nnn_left='/home/tripham/bin/nnn -e -a -o -r -R -i -d -H -P a -P p -s left -S -f'
@@ -25,6 +29,39 @@ export NNN_TRASH=1
 # (build.sh) into ~/.config/nnn/.dirhistory; jump to any entry with ;h
 # (the nnn-history plugin). Set to 'local' or unset to disable.
 export NNN_HIST=global
+
+# ---------------------------------------------------------------------------
+# Session management (;S -> nnn-sessions plugin).
+#
+# The manager lists every saved session, previews ALL 8 contexts' paths (plus
+# cursor/last/filter), and can activate, snapshot, restore, rename, delete or
+# duplicate them, and capture left+right+@ as one "workspace".
+#
+# Because nnn is built with O_SSN_ON_CD, the on-disk session file mirrors the
+# live instance, so a snapshot is an accurate point-in-time backup. Snapshots
+# live in ~/.config/nnn/sessions/.backups/<name>/<timestamp> next to a decoded
+# .txt mirror; workspace captures in ~/.config/nnn/sessions/.snapshots/.
+#
+# NNN_SSN_KEEP: how many snapshots to keep per session (0 = keep everything).
+#               The oldest are pruned automatically after each new snapshot.
+export NNN_SSN_KEEP=20
+#
+# NNN_SSN_GIT=1 also commits sessions/ after each snapshot (the nnn config dir
+# is already a git submodule), giving unlimited, diffable history. Off by default.
+# export NNN_SSN_GIT=1
+#
+# The preview lists all 8 context paths at the top (always visible) with the
+# per-context cursor/last/filter details below. Since a session is taller than
+# the pane, the preview scrolls: alt-j/k a line, alt-u/d half a page, alt-b/f a
+# page, alt-g/G to the ends, alt-p cycles the preview size, alt-z toggles wrap
+# and alt-h hides it. NNN_SSN_PREVIEW overrides the geometry (any fzf
+# --preview-window spec) -- e.g. a taller pane at the bottom:
+# export NNN_SSN_PREVIEW='down,70%,wrap'
+#
+# A full-fidelity activate/restore (sort, filter, cursor, colors -- not just
+# directories) needs nnn built with O_SSN_PIPE=1 (see build.sh), which exports
+# NNN_SSN_PIPE=1 so the plugin can detect it. Without it the plugin degrades to
+# cd-ing into the session's current directory.
 
 # ---------------------------------------------------------------------------
 # cwd-guard (bash) -- companion to ~/.config/fish/conf.d/nnn_cwd_guard.fish.
