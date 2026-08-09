@@ -1,3 +1,5 @@
 sessions
 .selection
 finderbms
+.dirhistory
+.history-*.tmp
