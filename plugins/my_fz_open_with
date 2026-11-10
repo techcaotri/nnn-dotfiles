@@ -1,1 +1,107 @@
-/home/tripham/Dev/Playground_Terminal/nnn/plugins/my_fz_open_with
+#!/usr/bin/env sh
+
+# Description: Regular mode:
+#                Fuzzy find a file in directory subtree.
+#                Opens in $VISUAL or $EDITOR if text.
+#                Opens other type of files with mimeopen_bg.
+#                Work only with a single file selected.
+#
+#              Picker mode:
+#                If picker mode output file is passed, it
+#                will be overwritten with any picked files.
+#                Leaves untouched if no file is picked.
+#                Works with single/multiple files selected.
+#
+# Dependencies: fd/find, fzf/skim, mimeopen_bg
+#
+# Shell: POSIX compliant
+# Author: Tri Pham
+
+NUKE="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/plugins/nuke"
+USE_NUKE=0
+
+# shellcheck disable=SC1090,SC1091
+. "$(dirname "$0")"/.nnn-plugin-helper
+
+if type fzf >/dev/null 2>&1; then
+    cmd="$FZF_DEFAULT_COMMAND"
+    if type fd >/dev/null 2>&1; then
+        [ -z "$cmd" ] && cmd="fd -t f 2>/dev/null"
+    else
+        [ -z "$cmd" ] && cmd="find . -type f 2>/dev/null"
+    fi
+    entry="$(eval "$cmd" | fzf -m)"
+    # To show only the file name
+    # entry=$(find . -type f 2>/dev/null | fzf --delimiter / --with-nth=-1 --tiebreak=begin --info=hidden)
+elif type sk >/dev/null 2>&1; then
+	entry=$(find . -type f 2>/dev/null | sk)
+else
+    exit 1
+fi
+
+# Check for picker mode
+if [ "$3" ]; then
+    if [ "$entry" ]; then
+        case "$entry" in
+            /*) fullpath="$entry" ;;
+            *)  fullpath="$PWD/$entry" ;;
+        esac
+        if [ "-" = "$3" ]; then
+            printf "%s\n" "$fullpath"
+        else
+            printf "%s\n" "$fullpath" > "$3"
+        fi
+
+        # Tell `nnn` to clear its internal selection
+        printf "%s" "0p" > "$NNN_PIPE"
+    fi
+
+    exit 0
+fi
+
+if [ "$USE_NUKE" -ne 0 ]; then
+    "$NUKE" "$entry"
+    exit 0
+fi
+
+if [ -z "$entry" ]; then
+    exit 0
+fi
+
+# Open the file (works for a single file only)
+echo "**********************************************************"
+echo "> Selected file: $entry\n"
+echo "Please choose the action to proceed:\n"
+echo "  1. Open with LunarVim (tol)"
+echo "  2. Open with NeoVim (ton)"
+echo "  3. Open with Visual Studio Code - Insiders"
+echo "  4. Open with mimeopen_bg" 
+echo "  5. Open with mimeopen_bg (magic only)" 
+echo "  6. Copy absolute path to clipboard" 
+read -r -p "Action: " ans
+case $ans in
+    1)
+        tol "$entry";;
+    2)
+        ton "$entry";;
+    3)
+        code-insiders "$entry";;
+    4)
+        mimeopen_bg "$entry";;
+    5)
+        mimeopen_bg -M "$entry";;
+    6)
+        if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+          # Wayland
+          tr '\0' '\n' < "$selection" | wl-copy
+        elif type xsel >/dev/null 2>&1; then
+          # Linux 
+          xsel -d && echo "$selection" | tr '\0' '\n' | sed -z 's/[ \t]*\n$//' | xsel -bi
+        elif type xclip >/dev/null 2>&1; then
+          # Linux
+          tr '\0' '\n' < "$selection" | xclip -sel clip
+        fi
+        ;;
+    *)
+        exit;;
+esac

@@ -1,1 +1,747 @@
-/home/tripham/Dev/Playground_Terminal/nnn/plugins/nnn-sessions
+#!/usr/bin/env bash
+#
+# nnn-sessions: view and manage nnn sessions -- list, preview all 8 contexts,
+# activate, snapshot (backup), restore, rename, delete, duplicate, and capture
+# the whole dual-pane workspace as one unit.
+#
+# WHY IT WORKS: nnn built with O_SSN_ON_CD rewrites the session file on every
+# real directory change, so the on-disk file under
+#     ${XDG_CONFIG_HOME:-$HOME/.config}/nnn/sessions/<name>
+# is a live mirror of the running instance. A plain file copy is therefore an
+# accurate backup, and swapping the file + reloading is an accurate restore.
+#
+# ACTIVATE / RESTORE come in two flavours:
+#   * faithful -- swap the file, then ask nnn to load_session() via the control
+#     pipe op 's' ("<ctx>s<name>"). Restores paths AND sort/hidden/filter/cursor
+#     /colors for all 8 contexts. Needs nnn built with O_SSN_PIPE=1 (which
+#     exports NNN_SSN_PIPE=1 so this plugin can feature-detect it).
+#   * quick -- cd the current context to the session's saved current directory
+#     with the plain 'c' pipe op. Works on any build, but moves one context and
+#     restores no sort/filter/cursor. Used as the fallback.
+#
+# NOTE ON THE PIPE: nnn calls readpipe() exactly ONCE per plugin run, so a
+# plugin gets exactly ONE op per invocation. Writing a second message deadlocks
+# (nnn has closed the read end and waits in waitpid(); the plugin blocks opening
+# the FIFO for write). Every action below therefore sends at most one message.
+#
+# Layout managed under sessions/:
+#   <name>                      live session (binary v1)
+#   .backups/<name>/<ts>        timestamped snapshot (blob)
+#   .backups/<name>/<ts>.txt    decoded, human-readable mirror of that snapshot
+#   .snapshots/<label>.tar      whole-workspace capture (left + right + @)
+#
+# Configuration (env):
+#   NNN_SSN_KEEP    number of snapshots kept per session (default 20, 0 = keep all)
+#   NNN_SSN_GIT     1 = git-commit sessions/ after each snapshot (config dir is
+#                   already a git repo/submodule in this setup). Default 0.
+#   NNN_SSN_PREVIEW preview geometry, any fzf --preview-window spec
+#                   (default "right,60%,wrap"; try "down,70%,wrap" if the pane
+#                   is wide but short).
+#   NNN_SSN_PIPE    exported by nnn itself when built with O_SSN_PIPE=1.
+#   NNN_SESSION     exported by nnn itself: the active session name.
+#
+# Keys in the manager:
+#   ENTER activate   ctrl-s snapshot  ctrl-b snapshot history  ctrl-r rename
+#   ctrl-y duplicate ctrl-d delete    ctrl-x cd to its dir     ctrl-w workspace
+# Preview (a session is taller than the pane, so it scrolls):
+#   alt-j / alt-k    scroll one line          alt-u / alt-d  half page
+#   alt-b / alt-f    full page                alt-g / alt-G  top / bottom
+#   alt-p            cycle preview size       alt-z          toggle wrap
+#   alt-h            hide/show the preview    (shift-up/down and the wheel work
+#                                              too where the terminal allows)
+#
+# Usage:
+#   nnn-sessions                interactive manager (bind e.g. S:nnn-sessions -> ;S)
+#   nnn-sessions --snapshot [name]   snapshot a session non-interactively
+#   nnn-sessions --prune [name]      apply the retention limit now
+#   nnn-sessions --preview <file>    (internal) render the fzf preview
+#
+# Requires: fzf, xxd, od, dd, coreutils. tmux only for workspace fan-out.
+#
+# Authors: Tri Pham
+
+set -u
+
+CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nnn"
+SESSIONS_DIR="$CFG_DIR/sessions"
+BACKUPS_DIR="$SESSIONS_DIR/.backups"
+SNAP_DIR="$SESSIONS_DIR/.snapshots"
+
+KEEP_N="${NNN_SSN_KEEP:-20}"      # snapshots kept per session (0 = unlimited)
+USE_GIT="${NNN_SSN_GIT:-0}"
+
+# Session binary format v1 constants (mirror of src/nnn.h / src/nnn.c)
+CTX_MAX=8
+SIZE_T=8
+SETTINGS_SIZE=4
+UINT_SIZE=4
+HDR_LEN=$((SIZE_T + 4 * CTX_MAX * SIZE_T))   # ver + 4 length arrays = 264
+
+# No-op when there is no controlling terminal (cron/scripted runs), so
+# automation never hangs. /dev/tty can exist yet be unopenable, so probe it by
+# actually opening it rather than testing the node.
+pause() {
+    # The probe runs in a subshell whose stderr is already /dev/null, so a
+    # failing open prints nothing (redirections on `exec` are applied left to
+    # right, and would report the error before 2>/dev/null took effect).
+    ( : </dev/tty ) 2>/dev/null || return 0
+    printf '\n%s' 'Press any key to continue...'
+    read -r _ </dev/tty 2>/dev/null || true
+}
+die() { printf '%s\n' "$*" >&2; pause; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Binary session parsing
+# ---------------------------------------------------------------------------
+
+# Read the whole 264-byte header in ONE process as 33 decimal size_t values:
+#   [0]=ver  [1..8]=pathln  [9..16]=lastln  [17..24]=nameln  [25..32]=fltrln
+read_header() {
+    od -An -tu8 -N "$HDR_LEN" -v -- "$1" 2>/dev/null | tr -s ' ' '\n' | grep -v '^$'
+}
+
+# rdstr <offset> <len> <file> -- extract a NUL-terminated string field
+rdstr() {
+    [ "$2" -gt 0 ] 2>/dev/null || return 0
+    dd if="$3" bs=1 skip="$1" count="$2" status=none 2>/dev/null | tr -d '\000'
+}
+
+# A real session file starts with size_t ver == 1 and is at least header+cfg long.
+is_session() {
+    local f="$1" sz ver
+    [ -f "$f" ] || return 1
+    sz=$(stat -c '%s' -- "$f" 2>/dev/null || echo 0)
+    [ "$sz" -ge $((HDR_LEN + SETTINGS_SIZE)) ] || return 1
+    ver=$(od -An -tu8 -N "$SIZE_T" -v -- "$f" 2>/dev/null | tr -d ' \n')
+    [ "$ver" = "1" ]
+}
+
+# parse_session <file> -- emit one TSV line per ACTIVE context:
+#   ctx \t path \t cursor_name \t last_dir \t filter
+# Contexts with no path (inactive) are skipped.
+parse_session() {
+    local f="$1"
+    local -a H PLEN LLEN NLEN FLEN
+    local i off
+
+    [ -f "$f" ] || return 0
+    mapfile -t H < <(read_header "$f")
+    [ "${#H[@]}" -ge 33 ] || return 0
+    [ "${H[0]}" = "1" ] || return 0            # SESSIONS_VERSION == 1
+
+    for i in $(seq 0 $((CTX_MAX - 1))); do
+        PLEN[i]=${H[$((1 + i))]}
+        LLEN[i]=${H[$((1 + CTX_MAX + i))]}
+        NLEN[i]=${H[$((1 + 2 * CTX_MAX + i))]}
+        FLEN[i]=${H[$((1 + 3 * CTX_MAX + i))]}
+    done
+
+    off=$((HDR_LEN + SETTINGS_SIZE))           # skip the global cfg
+    for i in $(seq 0 $((CTX_MAX - 1))); do
+        off=$((off + SETTINGS_SIZE + UINT_SIZE))   # skip c_cfg + color
+        local cname clast cfltr cpath
+        cname=$(rdstr "$off" "${NLEN[i]}" "$f"); off=$((off + NLEN[i]))
+        clast=$(rdstr "$off" "${LLEN[i]}" "$f"); off=$((off + LLEN[i]))
+        cfltr=$(rdstr "$off" "${FLEN[i]}" "$f"); off=$((off + FLEN[i]))
+        cpath=$(rdstr "$off" "${PLEN[i]}" "$f"); off=$((off + PLEN[i]))
+        [ -n "$cpath" ] && printf '%s\t%s\t%s\t%s\t%s\n' \
+            "$((i + 1))" "$cpath" "$cname" "$clast" "$cfltr"
+    done
+}
+
+# session_curctx <file> -- the 0-based context that was current when saved.
+# The global cfg is the 4-byte `settings` bitfield right after the header, and
+# settings.curctx sits at bits 13..15 (13 single-bit fields precede it).
+# Defined here, with the other parsers, because decode_to_text() needs it and
+# the --preview entry point runs before the later sections are parsed.
+session_curctx() {
+    local cfg
+    cfg=$(od -An -tu4 -j "$HDR_LEN" -N "$SETTINGS_SIZE" -v -- "$1" 2>/dev/null | tr -d ' \n')
+    [ -n "${cfg:-}" ] || { echo 0; return; }
+    echo $(( (cfg >> 13) & 7 ))
+}
+
+# How many contexts are active in a session file (cheap: header only).
+ctx_count() {
+    local f="$1"
+    local -a H
+    mapfile -t H < <(read_header "$f")
+    [ "${#H[@]}" -ge 33 ] || { echo 0; return; }
+    [ "${H[0]}" = "1" ] || { echo 0; return; }
+    local i n=0
+    for i in $(seq 1 "$CTX_MAX"); do
+        [ "${H[i]}" -gt 0 ] 2>/dev/null && n=$((n + 1))
+    done
+    echo "$n"
+}
+
+# ---------------------------------------------------------------------------
+# Decoded text mirror / preview -- shows ALL 8 contexts
+#
+# Layout matters: the preview pane is narrow and short (it sits beside the list,
+# often inside an already-split tmux pane). So all 8 context PATHS are printed
+# as one compact block at the TOP, where they fit without scrolling, and the
+# per-context details (cursor/last/filter) follow underneath. The fzf preview
+# scroll keys (alt-j/k, alt-u/d, alt-g/G) reach the rest.
+# ---------------------------------------------------------------------------
+
+# Abbreviate $HOME to '~' -- buys ~13 columns per line in this setup.
+tilde() {
+    case "$1" in
+        "$HOME") printf '~' ;;
+        "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+decode_to_text() {
+    local f="$1" label="${2:-$(basename -- "$1")}"
+    local -a paths names lasts fltrs
+    local i ctx cpath cname clast cfltr cur mark n=0 details d
+
+    printf 'session : %s\n' "$label"
+    if [ ! -f "$f" ]; then
+        printf 'file    : %s (missing)\n' "$f"
+        return
+    fi
+    printf 'file    : %s\n' "$(tilde "$f")"
+    printf 'saved   : %s  (%s bytes)\n' \
+        "$(stat -c '%y' -- "$f" 2>/dev/null | cut -d'.' -f1)" \
+        "$(stat -c '%s' -- "$f" 2>/dev/null || echo '?')"
+
+    if ! is_session "$f"; then
+        printf '\n[!] not a session file, or unsupported version (expected v1).\n'
+        printf '    It can still be backed up / restored as an opaque blob.\n'
+        return
+    fi
+
+    while IFS=$'\t' read -r ctx cpath cname clast cfltr; do
+        [ -n "${ctx:-}" ] || continue
+        paths[ctx]="$cpath"; names[ctx]="$cname"
+        lasts[ctx]="$clast"; fltrs[ctx]="$cfltr"
+        n=$((n + 1))
+    done < <(parse_session "$f")
+
+    cur=$(( $(session_curctx "$f") + 1 ))   # 1-based context that was current
+
+    # --- block 1: every context's path, one line each (always on screen) ----
+    printf '\ncontexts (%s of %s active, * = current):\n' "$n" "$CTX_MAX"
+    for i in $(seq 1 "$CTX_MAX"); do
+        if [ "$i" = "$cur" ]; then mark='*'; else mark=' '; fi
+        cpath="${paths[i]:-}"
+        if [ -z "$cpath" ]; then
+            printf ' %s %s  -\n' "$mark" "$i"
+        elif [ -d "$cpath" ]; then
+            printf ' %s %s  %s\n' "$mark" "$i" "$(tilde "$cpath")"
+        else
+            # A restore would land nowhere -- worth flagging.
+            printf ' %s %s  %s  [missing]\n' "$mark" "$i" "$(tilde "$cpath")"
+        fi
+    done
+
+    # --- block 2: details, only for contexts that have any ------------------
+    details=''
+    for i in $(seq 1 "$CTX_MAX"); do
+        [ -n "${paths[i]:-}" ] || continue
+        d=''
+        [ -n "${names[i]:-}" ] && d+="      cursor: ${names[i]}"$'\n'
+        [ -n "${lasts[i]:-}" ] && d+="      last  : $(tilde "${lasts[i]}")"$'\n'
+        # c_fltr[0] is the filter TYPE byte ('/' = FILTER); [1..] is the pattern.
+        # A bare type byte with no pattern means no active filter.
+        [ -n "${fltrs[i]:-}" ] && [ "${#fltrs[i]}" -gt 1 ] && \
+            d+="      filter: ${fltrs[i]:1}"$'\n'
+        [ -n "$d" ] && details+="  ctx $i"$'\n'"$d"
+    done
+    if [ -n "$details" ]; then
+        printf '\ndetails (alt-j/k line, alt-u/d half-page, alt-g/G ends):\n'
+        printf '%s' "$details"
+    fi
+}
+
+# Preview entry point used by fzf (kept as a self re-invocation so fzf can call it)
+if [ "${1:-}" = "--preview" ]; then
+    shift
+    kind="${1:-S}"; file="${2:-}"; label="${3:-}"
+    case "$kind" in
+        W)  printf 'workspace snapshot : %s\n\n' "$label"
+            printf 'contents:\n'
+            tar -tvf "$file" 2>/dev/null | sed 's/^/  /'
+            ;;
+        *)  decode_to_text "$file" "$label" ;;
+    esac
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Backup store
+# ---------------------------------------------------------------------------
+now_ts() { date +%Y-%m-%dT%H-%M-%S; }
+
+# snapshot <name> -- copy the live session + a decoded mirror into the store,
+# atomically (write .tmp in the same dir, then rename), then apply retention.
+snapshot() {
+    local name="$1" src="$SESSIONS_DIR/$1" dir ts
+    [ -f "$src" ] || { printf 'No such session: %s\n' "$name" >&2; return 1; }
+    dir="$BACKUPS_DIR/$name"
+    mkdir -p -- "$dir" || return 1
+    ts=$(now_ts)
+
+    # Finalize the blob first (copy + rename = atomic), then decode from the
+    # final path so the mirror records the real name rather than the temp one.
+    cp -- "$src" "$dir/$ts.tmp" || return 1
+    mv -f -- "$dir/$ts.tmp" "$dir/$ts" || return 1
+    decode_to_text "$dir/$ts" "$name @ $ts" > "$dir/$ts.txt.tmp" 2>/dev/null
+    mv -f -- "$dir/$ts.txt.tmp" "$dir/$ts.txt" 2>/dev/null
+
+    prune "$name"
+    [ "$USE_GIT" = "1" ] && git_commit "snapshot $name @ $ts"
+    printf '%s\n' "$ts"
+}
+
+# prune <name> -- keep only the newest $KEEP_N snapshots (blob + .txt as a pair)
+prune() {
+    local name="$1" dir="$BACKUPS_DIR/$1" old
+    [ "$KEEP_N" -gt 0 ] 2>/dev/null || return 0     # 0 / invalid = keep everything
+    [ -d "$dir" ] || return 0
+    # Blobs only (exclude the .txt mirrors), newest first, drop the survivors.
+    while IFS= read -r old; do
+        [ -n "$old" ] || continue
+        rm -f -- "$dir/$old" "$dir/$old.txt"
+    done < <(list_backups "$name" | tail -n +$((KEEP_N + 1)))
+}
+
+# list_backups <name> -- snapshot timestamps, newest first
+list_backups() {
+    local dir="$BACKUPS_DIR/$1"
+    [ -d "$dir" ] || return 0
+    find "$dir" -maxdepth 1 -type f ! -name '*.txt' ! -name '*.tmp' -printf '%f\n' \
+        2>/dev/null | sort -r
+}
+
+git_commit() {
+    command -v git >/dev/null 2>&1 || return 0
+    git -C "$CFG_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    git -C "$CFG_DIR" add -A -- sessions >/dev/null 2>&1
+    git -C "$CFG_DIR" commit -q -m "nnn sessions: $1" >/dev/null 2>&1 || true
+}
+
+# ---------------------------------------------------------------------------
+# Activation / restore
+# ---------------------------------------------------------------------------
+
+# faithful_load <name> -- ask THIS instance to load_session(name) via pipe op 's'
+faithful_load() {
+    [ -n "${NNN_SSN_PIPE:-}" ] || return 1
+    [ -n "${NNN_PIPE:-}" ] || return 1
+    printf '%s' "0s$1" > "$NNN_PIPE"
+}
+
+# quick_switch <file> -- cd the CURRENT context to the session's saved current
+# directory, using the plain 'c' op. Directories only: no sort/filter/cursor.
+# Works on any build, including a stock upstream one.
+#
+# EXACTLY ONE message: nnn calls readpipe() once per plugin run (run_plugin),
+# so it honours a single op. A loop over the 8 contexts would also DEADLOCK --
+# after the first op nnn closes the read end and blocks in waitpid(), so the
+# plugin's next open() of the FIFO for writing would block forever.
+quick_switch() {
+    local f="$1" cur target
+    [ -n "${NNN_PIPE:-}" ] || return 1
+    cur=$(session_curctx "$f")
+    target=$(parse_session "$f" | awk -F'\t' -v c="$((cur + 1))" '$1 == c { print $2; exit }')
+    # Fall back to the first active context if the saved one is empty.
+    [ -n "${target:-}" ] || target=$(parse_session "$f" | awk -F'\t' 'NR == 1 { print $2 }')
+    [ -n "${target:-}" ] || { printf 'That session has no usable directory.\n'; pause; return 1; }
+    [ -d "$target" ] || { printf 'Directory no longer exists:\n  %s\n' "$target"; pause; return 1; }
+    printf '%s' "0c$target" > "$NNN_PIPE"
+}
+
+# Which session does the OTHER nnn pane own? (same convention as ctx_switcher)
+other_pane_session() {
+    [ -n "${TMUX:-}" ] || return 0
+    command -v tmux >/dev/null 2>&1 || return 0
+    if [ "$(tmux display-message -p '#{pane_index}' 2>/dev/null)" = "1" ]; then
+        printf 'right\n'
+    else
+        printf 'left\n'
+    fi
+}
+
+# activate <name> -- make the running instance adopt session <name>.
+# Warns first if that session is the other pane's live session, because with
+# O_SSN_ON_CD both panes would then auto-save onto the same file.
+activate() {
+    local name="$1" other
+    other=$(other_pane_session)
+    if [ -n "$other" ] && [ "$name" = "$other" ]; then
+        printf 'Warning: "%s" is the session the OTHER pane is using.\n' "$name"
+        printf 'Activating it here makes BOTH panes auto-save onto the same file.\n'
+        printf 'Continue anyway? [y/N] '
+        read -r ans </dev/tty 2>/dev/null
+        case "${ans:-}" in [yY]*) ;; *) return 1 ;; esac
+    fi
+
+    if faithful_load "$name"; then
+        return 0
+    fi
+    printf 'Full restore needs nnn built with O_SSN_PIPE=1.\n'
+    printf 'Falling back to a cd into that session'\''s current directory\n'
+    printf '(no sort/filter/cursor, and only this context moves).\n'
+    pause
+    quick_switch "$SESSIONS_DIR/$name"
+}
+
+# restore_backup <name> <ts> -- swap a snapshot over the live file, then reload.
+# The file swap MUST happen before the reload; nnn does not save first, so the
+# restored bytes are what gets loaded.
+restore_backup() {
+    local name="$1" ts="$2" blob="$BACKUPS_DIR/$1/$2"
+    [ -f "$blob" ] || { printf 'Missing snapshot: %s\n' "$blob" >&2; return 1; }
+
+    # Safety net: snapshot the current state before overwriting it.
+    snapshot "$name" >/dev/null 2>&1
+
+    cp -- "$blob" "$SESSIONS_DIR/$name.tmp" || return 1
+    mv -f -- "$SESSIONS_DIR/$name.tmp" "$SESSIONS_DIR/$name" || return 1
+
+    # Only reload if this instance is the one that owns that session.
+    if [ "${NNN_SESSION:-}" = "$name" ] || [ -z "${NNN_SESSION:-}" ]; then
+        if ! faithful_load "$name"; then
+            quick_switch "$SESSIONS_DIR/$name"
+        fi
+    else
+        printf 'Restored "%s" on disk.\n' "$name"
+        printf 'This instance is on "%s", so it was not reloaded.\n' "${NNN_SESSION:-none}"
+        pause
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Workspace snapshots (left + right + @ as one labelled unit)
+# ---------------------------------------------------------------------------
+workspace_save() {
+    local label="$1" f found=()
+    mkdir -p -- "$SNAP_DIR" || return 1
+    for f in left right @; do
+        [ -f "$SESSIONS_DIR/$f" ] && found+=("$f")
+    done
+    [ "${#found[@]}" -gt 0 ] || { printf 'No left/right/@ sessions to capture.\n'; pause; return 1; }
+    tar -cf "$SNAP_DIR/$label.tar.tmp" -C "$SESSIONS_DIR" -- "${found[@]}" 2>/dev/null \
+        && mv -f -- "$SNAP_DIR/$label.tar.tmp" "$SNAP_DIR/$label.tar" || return 1
+    [ "$USE_GIT" = "1" ] && git_commit "workspace snapshot $label"
+    printf 'Captured workspace "%s": %s\n' "$label" "${found[*]}"
+    pause
+}
+
+# Restore a workspace and reload BOTH panes.
+workspace_restore() {
+    local label="$1" tar="$SNAP_DIR/$1.tar" cur_pane pane cmd ssn
+    [ -f "$tar" ] || { printf 'No such workspace: %s\n' "$label" >&2; pause; return 1; }
+
+    printf 'Restore workspace "%s" over left/right/@? [y/N] ' "$label"
+    read -r ans </dev/tty 2>/dev/null
+    case "${ans:-}" in [yY]*) ;; *) return 1 ;; esac
+
+    # Back up whatever is live now, so this is undoable.
+    for ssn in left right @; do
+        [ -f "$SESSIONS_DIR/$ssn" ] && snapshot "$ssn" >/dev/null 2>&1
+    done
+
+    tar -xf "$tar" -C "$SESSIONS_DIR" 2>/dev/null || { printf 'Extract failed.\n'; pause; return 1; }
+
+    # Reload this pane, then the sibling nnn pane.
+    if [ -n "${NNN_SESSION:-}" ]; then
+        faithful_load "$NNN_SESSION" || quick_switch "$SESSIONS_DIR/$NNN_SESSION"
+    fi
+
+    if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
+        cur_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+        while read -r pane cmd; do
+            [ "$cmd" = "nnn" ] || continue
+            [ "$pane" != "$cur_pane" ] || continue
+            # The sibling reloads itself: ^S l <name> Enter. ';' would be a tmux
+            # separator, so nothing here may contain one.
+            if [ "$(tmux display-message -p -t "$pane" '#{pane_index}' 2>/dev/null)" = "1" ]; then
+                ssn=right
+            else
+                ssn=left
+            fi
+            [ -f "$SESSIONS_DIR/$ssn" ] || continue
+            tmux send-keys -t "$pane" C-s l "$ssn" Enter 2>/dev/null
+        done < <(tmux list-panes -F '#{pane_id} #{pane_current_command}' 2>/dev/null)
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Non-interactive entry points
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+    --snapshot)
+        name="${2:-${NNN_SESSION:-@}}"
+        ts=$(snapshot "$name") || die "Snapshot failed for '$name'."
+        printf 'Snapshot of "%s": %s (keeping %s)\n' "$name" "$ts" \
+            "$([ "$KEEP_N" -gt 0 ] 2>/dev/null && echo "$KEEP_N" || echo 'all')"
+        exit 0
+        ;;
+    --prune)
+        prune "${2:-${NNN_SESSION:-@}}"; exit 0
+        ;;
+    --cd)
+        # cd this context into a session's current directory (no reload)
+        [ -n "${2:-}" ] || die "Usage: nnn-sessions --cd <session>"
+        [ -f "$SESSIONS_DIR/$2" ] || die "No such session: $2"
+        quick_switch "$SESSIONS_DIR/$2"
+        exit 0
+        ;;
+    --activate)
+        [ -n "${2:-}" ] || die "Usage: nnn-sessions --activate <session>"
+        [ -f "$SESSIONS_DIR/$2" ] || die "No such session: $2"
+        activate "$2"
+        exit 0
+        ;;
+    --workspace-save)
+        # Scriptable: capture left+right+@ as one labelled unit (e.g. from cron)
+        [ -n "${2:-}" ] || die "Usage: nnn-sessions --workspace-save <label>"
+        workspace_save "${2// /_}"
+        exit 0
+        ;;
+    --list)
+        # Scriptable: "<name> <ctx-count> <snapshots>" per session
+        for f in "$SESSIONS_DIR"/*; do
+            [ -f "$f" ] || continue
+            is_session "$f" || continue
+            n=$(basename -- "$f")
+            printf '%s\t%s ctx\t%s snapshots\n' "$n" "$(ctx_count "$f")" \
+                "$(list_backups "$n" | grep -c .)"
+        done
+        exit 0
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Interactive manager
+# ---------------------------------------------------------------------------
+command -v fzf >/dev/null 2>&1 || die "fzf not found in PATH."
+[ -d "$SESSIONS_DIR" ] || die "No sessions directory: $SESSIONS_DIR"
+mkdir -p -- "$BACKUPS_DIR" "$SNAP_DIR" 2>/dev/null
+
+SELF="$0"
+
+# ---------------------------------------------------------------------------
+# Preview window: scrolling, resizing and wrapping.
+#
+# A session preview is taller than the pane (8 context paths plus per-context
+# details), and the pane itself is usually one half of a tmux split, so the
+# preview must be scrollable and growable.
+#
+# alt-* is used throughout because ctrl-{s,d,r,y,b,x,w} are already taken by the
+# actions, and because shift+arrow / mouse wheel are unreliable through tmux and
+# some terminals. fzf's own shift-up/shift-down and wheel bindings still work
+# where the terminal passes them through -- these are the dependable additions.
+#
+# NNN_SSN_PREVIEW overrides the default preview geometry (any fzf
+# --preview-window spec), e.g. "down,70%,wrap" for a wide-but-short pane.
+# ---------------------------------------------------------------------------
+PREVIEW_WIN="${NNN_SSN_PREVIEW:-right,60%,wrap}"
+
+PREVIEW_BINDS="--bind=alt-j:preview-down,alt-k:preview-up"
+PREVIEW_BINDS="$PREVIEW_BINDS,alt-d:preview-half-page-down,alt-u:preview-half-page-up"
+PREVIEW_BINDS="$PREVIEW_BINDS,alt-f:preview-page-down,alt-b:preview-page-up"
+PREVIEW_BINDS="$PREVIEW_BINDS,alt-g:preview-top,alt-G:preview-bottom"
+PREVIEW_BINDS="$PREVIEW_BINDS,alt-z:toggle-preview-wrap,alt-h:toggle-preview"
+# Grow the preview: tall-bottom -> wide-right -> back to the default.
+# The cycle deliberately EXCLUDES the current geometry and 'hidden': fzf applies
+# the listed windows in order, so leading with the active one would make the
+# first press a no-op, and hiding is alt-h's job. The last entry returns to
+# $PREVIEW_WIN so the cycle ends where the user configured it.
+PREVIEW_BINDS="$PREVIEW_BINDS,alt-p:change-preview-window(down,75%,wrap|right,80%,wrap|$PREVIEW_WIN)"
+# Wheel over the preview, where the terminal reports it.
+PREVIEW_BINDS="$PREVIEW_BINDS --bind=shift-up:preview-up,shift-down:preview-down"
+
+PREVIEW_HELP='preview: alt-j/k line  alt-u/d half-page  alt-g/G ends  alt-p size  alt-z wrap  alt-h hide'
+
+# Build the live-session rows:  kind \t name \t file \t display
+build_sessions() {
+    local f name n mark disp
+    while IFS= read -r f; do
+        name=$(basename -- "$f")
+        is_session "$f" || continue
+        n=$(ctx_count "$f")
+        mark=""
+        [ "$name" = "${NNN_SESSION:-}" ] && mark=" [active]"
+        [ "$name" = "$(other_pane_session)" ] && [ "$name" != "${NNN_SESSION:-}" ] && mark=" [other pane]"
+        [ "$name" = "@" ] && mark="$mark [auto]"
+        disp=$(printf '%-22s %d ctx  %s%s' "$name" "$n" \
+            "$(stat -c '%y' -- "$f" 2>/dev/null | cut -d'.' -f1)" "$mark")
+        printf 'S\t%s\t%s\t%s\n' "$name" "$f" "$disp"
+    done < <(find "$SESSIONS_DIR" -maxdepth 1 -type f ! -name '.*' -print 2>/dev/null | sort)
+}
+
+build_workspaces() {
+    local f label disp
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        label=$(basename -- "$f" .tar)
+        disp=$(printf '%-22s workspace  %s' "$label" \
+            "$(stat -c '%y' -- "$f" 2>/dev/null | cut -d'.' -f1)")
+        printf 'W\t%s\t%s\t%s\n' "$label" "$f" "$disp"
+    done < <(find "$SNAP_DIR" -maxdepth 1 -type f -name '*.tar' -print 2>/dev/null | sort)
+}
+
+# Drill-in view: the snapshot history of one session.
+backups_view() {
+    local name="$1" menu chosen key ts
+    while :; do
+        menu=$(
+            while IFS= read -r ts; do
+                [ -n "$ts" ] || continue
+                printf 'B\t%s\t%s\t%-24s %s\n' "$ts" "$BACKUPS_DIR/$name/$ts" "$ts" \
+                    "$(stat -c '%s' -- "$BACKUPS_DIR/$name/$ts" 2>/dev/null) bytes"
+            done < <(list_backups "$name")
+        )
+        if [ -z "$menu" ]; then
+            printf 'No snapshots yet for "%s". Take one with ctrl-s.\n' "$name"; pause; return
+        fi
+
+        # shellcheck disable=SC2086
+        chosen=$(printf '%s\n' "$menu" | fzf \
+            --delimiter='\t' --with-nth=4 \
+            --prompt="snapshots of $name > " \
+            --header="ENTER restore   ctrl-d delete   ESC back"$'\n'"$PREVIEW_HELP" \
+            --expect=ctrl-d \
+            --preview="'$SELF' --preview B {3} '$name @ {2}'" \
+            --preview-window="$PREVIEW_WIN" \
+            $PREVIEW_BINDS) || return
+        key=$(printf '%s\n' "$chosen" | head -1)
+        chosen=$(printf '%s\n' "$chosen" | sed -n '2p')
+        [ -n "$chosen" ] || return
+        IFS=$'\t' read -r _k ts _f _d <<< "$chosen"
+
+        case "$key" in
+            ctrl-d)
+                printf 'Delete snapshot %s of "%s"? [y/N] ' "$ts" "$name"
+                read -r ans </dev/tty 2>/dev/null
+                case "${ans:-}" in [yY]*) rm -f -- "$BACKUPS_DIR/$name/$ts" "$BACKUPS_DIR/$name/$ts.txt" ;; esac
+                ;;
+            *)
+                printf 'Restore "%s" to its %s state?\n' "$name" "$ts"
+                printf '(the current state is snapshotted first) [y/N] '
+                read -r ans </dev/tty 2>/dev/null
+                case "${ans:-}" in [yY]*) restore_backup "$name" "$ts"; exit 0 ;; esac
+                ;;
+        esac
+    done
+}
+
+while :; do
+    MENU=$(build_sessions; build_workspaces)
+    [ -n "$MENU" ] || die "No sessions found in $SESSIONS_DIR"
+
+    HEADER="ENTER activate  ctrl-s snapshot  ctrl-b history  ctrl-r rename  ctrl-y duplicate"
+    HEADER="$HEADER"$'\n'"ctrl-d delete   ctrl-x cd to its dir  ctrl-w save workspace  ESC quit"
+    HEADER="$HEADER"$'\n'"$PREVIEW_HELP"
+    [ -n "${NNN_SSN_PIPE:-}" ] || HEADER="$HEADER"$'\n'"[!] O_SSN_PIPE=0: activate can only cd (rebuild with O_SSN_PIPE=1)"
+
+    # shellcheck disable=SC2086
+    CHOSEN=$(printf '%s\n' "$MENU" | fzf \
+        --delimiter='\t' --with-nth=4 \
+        --prompt='sessions > ' \
+        --header="$HEADER" \
+        --expect=ctrl-s,ctrl-d,ctrl-r,ctrl-y,ctrl-b,ctrl-x,ctrl-w \
+        --preview="'$SELF' --preview {1} {3} {2}" \
+        --preview-window="$PREVIEW_WIN" \
+        $PREVIEW_BINDS) || exit 0
+
+    KEY=$(printf '%s\n' "$CHOSEN" | head -1)
+    SEL=$(printf '%s\n' "$CHOSEN" | sed -n '2p')
+
+    # ctrl-w does not need a selection
+    if [ "$KEY" = "ctrl-w" ]; then
+        printf 'Workspace label: '
+        read -r label </dev/tty 2>/dev/null
+        [ -n "${label:-}" ] && workspace_save "${label// /_}"
+        continue
+    fi
+
+    [ -n "$SEL" ] || exit 0
+    IFS=$'\t' read -r KIND NAME FILE _DISP <<< "$SEL"
+    [ -n "${NAME:-}" ] || exit 0
+
+    # ----- workspace rows -----
+    if [ "$KIND" = "W" ]; then
+        case "$KEY" in
+            ctrl-d)
+                printf 'Delete workspace snapshot "%s"? [y/N] ' "$NAME"
+                read -r ans </dev/tty 2>/dev/null
+                case "${ans:-}" in [yY]*) rm -f -- "$FILE" ;; esac
+                ;;
+            "")  workspace_restore "$NAME" && exit 0 ;;
+            *)   printf 'That action does not apply to a workspace snapshot.\n'; pause ;;
+        esac
+        continue
+    fi
+
+    # ----- live session rows -----
+    case "$KEY" in
+        ctrl-s)
+            if ts=$(snapshot "$NAME"); then
+                printf 'Snapshot of "%s": %s\n' "$NAME" "$ts"
+            else
+                printf 'Snapshot failed for "%s".\n' "$NAME"
+            fi
+            pause
+            ;;
+        ctrl-b)
+            backups_view "$NAME"
+            ;;
+        ctrl-r)
+            printf 'Rename "%s" to: ' "$NAME"
+            read -r new </dev/tty 2>/dev/null
+            new="${new// /_}"
+            if [ -n "${new:-}" ] && [ "$new" != "$NAME" ]; then
+                if [ -e "$SESSIONS_DIR/$new" ]; then
+                    printf 'A session named "%s" already exists.\n' "$new"; pause
+                else
+                    mv -- "$SESSIONS_DIR/$NAME" "$SESSIONS_DIR/$new"
+                    [ -d "$BACKUPS_DIR/$NAME" ] && mv -- "$BACKUPS_DIR/$NAME" "$BACKUPS_DIR/$new"
+                    [ "$NAME" = "${NNN_SESSION:-}" ] && {
+                        printf 'Note: this instance is still on "%s" and will\n' "$NAME"
+                        printf 'recreate it on the next directory change.\n'; pause; }
+                fi
+            fi
+            ;;
+        ctrl-y)
+            printf 'Duplicate "%s" as: ' "$NAME"
+            read -r new </dev/tty 2>/dev/null
+            new="${new// /_}"
+            if [ -n "${new:-}" ]; then
+                if [ -e "$SESSIONS_DIR/$new" ]; then
+                    printf 'A session named "%s" already exists.\n' "$new"; pause
+                else
+                    cp -- "$SESSIONS_DIR/$NAME" "$SESSIONS_DIR/$new"
+                fi
+            fi
+            ;;
+        ctrl-d)
+            if [ "$NAME" = "${NNN_SESSION:-}" ]; then
+                printf '"%s" is the session THIS instance is using.\n' "$NAME"
+                printf 'It will be recreated on the next directory change. Delete anyway? [y/N] '
+            else
+                printf 'Delete session "%s"? (snapshots are kept) [y/N] ' "$NAME"
+            fi
+            read -r ans </dev/tty 2>/dev/null
+            case "${ans:-}" in
+                [yY]*)
+                    snapshot "$NAME" >/dev/null 2>&1     # never lose it outright
+                    rm -f -- "$SESSIONS_DIR/$NAME"
+                    ;;
+            esac
+            ;;
+        ctrl-x)
+            quick_switch "$FILE" && exit 0
+            ;;
+        *)
+            activate "$NAME" && exit 0
+            ;;
+    esac
+done

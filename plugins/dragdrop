@@ -1,1 +1,128 @@
-/home/tripham/Dev/Playground_Terminal/nnn/plugins/dragdrop
+#!/usr/bin/env sh
+
+# Description: Open a drag-and-drop window to drop files onto other programs,
+#              or to drag the selection / current file out to other programs.
+#
+# Dependencies:
+#   - nnn-dnd : bundled libX11 helper, built with `make O_DND=1` (preferred)
+#   - dragon  : https://github.com/mwh/dragon            (fallback)
+#   - ripdrag : https://github.com/nik012003/ripdrag     (fallback, Wayland)
+#   - curl    : to fetch web files dropped as URLs
+#
+# Notes:
+#   1. Dropped files are added to nnn's selection. When run from nnn the
+#      dropped files are also shown as a fresh list (via $NNN_PIPE).
+#      Some web-based files are downloaded to the current dir with curl
+#      and may overwrite existing files.
+#   2. The native `D` key drives this plugin and exports NNN_DND_MODE to
+#      skip the interactive prompt. Invoked directly (e.g. ;d) it prompts.
+#      Press mm to clear nnn's selection first if needed.
+#
+# Shell: POSIX compliant
+# Author: 0xACE (drag-and-drop); nnn-dnd + NNN_PIPE integration
+
+# If you want system notification, put this equal to 1
+notify=0
+
+selection=${NNN_SEL:-${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.selection}
+resp=f
+all=
+
+# Prefer the bundled nnn-dnd helper, then dragon variants, then ripdrag.
+if type nnn-dnd >/dev/null 2>&1; then
+    dnd="nnn-dnd"
+elif type dragon-drag-and-drop >/dev/null 2>&1; then
+    dnd="dragon-drag-and-drop"
+elif type dragon-drop >/dev/null 2>&1; then
+    dnd="dragon-drop"
+elif type dragon >/dev/null 2>&1; then
+    dnd="dragon"
+else
+    dnd="ripdrag"
+fi
+
+add_file ()
+{
+    printf '%s\0' "$@" >> "$selection"
+}
+
+use_all ()
+{
+    # Non-interactive (driven by the D key): drag the whole selection.
+    if [ -n "$NNN_DND_MODE" ]; then
+        all="--all"
+        return
+    fi
+    printf "mark --all (a) [default=none]: "
+    read -r resp
+    if [ "$resp" = "a" ]; then
+        all="--all"
+    else
+        all=""
+    fi
+}
+
+# The native `D` key sets NNN_DND_MODE so we skip the second prompt.
+if [ "$NNN_DND_MODE" = "receive" ]; then
+    resp=r
+elif [ "$NNN_DND_MODE" = "drag" ]; then
+    if [ -s "$selection" ]; then resp=s; else resp=f; fi
+elif [ -s "$selection" ]; then
+    printf "Drop file (r). Drag selection (s), Drag current directory (d) or drag current file (f) [default=f]: "
+    read -r resp
+else
+    printf "Drop file (r). Drag current directory (d) or drag current file (f) [default=f]: "
+    read -r resp
+    if [ "$resp" = "s" ]; then
+        resp=f
+    fi
+fi
+
+if [ "$resp" = "s" ]; then
+    use_all
+    # shellcheck disable=SC2086 # $all is intentionally word-split (flag or empty)
+    sed -z 's|'"$PWD/"'||g' < "$selection" | xargs -0 "$dnd" $all 2>/dev/null &
+elif [ "$resp" = "d" ]; then
+    use_all
+    # shellcheck disable=SC2086 # $all is intentionally word-split (flag or empty)
+    "$dnd" $all "$PWD/"* 2>/dev/null &
+elif [ "$resp" = "r" ]; then
+    true > "$selection"
+    tmplist=$(mktemp 2>/dev/null) || { tmplist="${TMPDIR:-/tmp}/nnn-dnd-recv.$$"; : > "$tmplist"; }
+
+    # Run the drop window in the foreground so $NNN_PIPE is still drained by
+    # nnn; -x exits after the first drop. Received paths go to the selection
+    # and to a temp list for the listing step.
+    "$dnd" -x --print-path --target 2>/dev/null | while read -r f
+    do
+        if printf "%s" "$f" | grep -q '^\(https\?\|ftps\?\|s\?ftp\)://' ; then
+            if output=$(curl -fsLJOS "$f" 2>&1); then
+                filename="$(basename "${f%%\?*}")"
+                add_file "$PWD/$filename"
+                printf '%s\0' "$PWD/$filename" >> "$tmplist"
+                if [ "$notify" = 1 ]; then
+                    notify-send "Download Complete" "Finished downloading $filename"
+                fi
+            else
+                if [ "$notify" = 1 ]; then
+                    notify-send "Download Failed" "$output"
+                else
+                    echo "Download Failed: $output"
+                fi
+            fi
+        elif [ -e "$f" ]; then
+            add_file "$f"
+            printf '%s\0' "$f" >> "$tmplist"
+        fi
+    done
+
+    # Show the dropped files as a fresh list in nnn (list mode via the pipe).
+    if [ -n "$NNN_PIPE" ] && [ -s "$tmplist" ]; then
+        { printf '%s' "+l"; cat "$tmplist"; } > "$NNN_PIPE"
+    fi
+    rm -f "$tmplist"
+else
+    if [ -n "$1" ] && [ -e "$1" ]; then
+        "$dnd" "$1" 2>/dev/null &
+    fi
+fi
