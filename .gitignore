@@ -3,3 +3,4 @@ sessions
 finderbms
 .dirhistory
 .history-*.tmp
+.dirhistory.lock
